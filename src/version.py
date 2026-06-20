@@ -3,7 +3,7 @@
 Keep __version__ in step with the release tag (the CI names the exe from the tag) and
 with native-ui/DiscordTranscriber.Native.csproj <Version> when cutting a release.
 """
-__version__ = "0.2.4"
+__version__ = "0.2.5"
 
 GITHUB_REPO = "ellypaws/whispercord"
 
