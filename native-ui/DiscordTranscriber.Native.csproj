@@ -6,7 +6,7 @@
     <RootNamespace>DiscordTranscriber.Native</RootNamespace>
     <ApplicationManifest>app.manifest.xml</ApplicationManifest>
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
-    <Version>0.2.1</Version>
+    <Version>0.2.2</Version>
     <Platforms>x64</Platforms>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <UseWinUI>true</UseWinUI>
