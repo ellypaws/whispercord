@@ -34,8 +34,8 @@ jobs:
       - name: Name the exe
         shell: pwsh
         run: |
-          $ver = if ($env:GITHUB_REF -like 'refs/tags/*') { $env:GITHUB_REF -replace 'refs/tags/','' } else { $env:GITHUB_SHA.Substring(0,7) }
-          $name = "DiscordTranscriber-$ver.exe"
+          $ver = if ($env:GITHUB_REF -like 'refs/tags/*') { ($env:GITHUB_REF -replace 'refs/tags/','') -replace '^v','' } else { $env:GITHUB_SHA.Substring(0,7) }
+          $name = "whispercord-$ver-win-x64.exe"
           Copy-Item dist/DiscordTranscriber.exe $name
           "ASSET=$name" | Out-File -FilePath $env:GITHUB_ENV -Append
           "{0:N1} MB" -f ((Get-Item $name).Length / 1MB) | Write-Host

@@ -38,6 +38,7 @@ const LU = {
   "trash-2": '<path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/>',
   "info": '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
   "rotate-cw": '<path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/>',
+  "arrow-up-down": '<path d="m21 16-4 4-4-4"/><path d="M17 20V4"/><path d="m3 8 4-4 4 4"/><path d="M7 4v16"/>',
 };
 function icon(name, cls) {
   return '<svg class="lu ' + (cls || "") + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + (LU[name] || "") + "</svg>";
@@ -98,11 +99,20 @@ function mdToHtml(md) {
 }
 
 // ---------- transcript direction (newest at bottom by default, flippable) ----------
-const newestTop = () => !!(CFG && CFG.ui && CFG.ui.newest_at_top);
-const jumpLabel = () => "Jump to latest " + (newestTop() ? "↑" : "↓");
-function placeRow(p, el) {                 // insert at the "newest" end
-  if (newestTop()) p.body.insertBefore(el, p.body.firstChild);
+const newestTop = () => !!(CFG && CFG.ui && CFG.ui.newest_at_top);   // global default for new panels
+const jumpLabel = (top) => "Jump to latest " + (top ? "↑" : "↓");
+const flipTitle = (top) => top ? "Newest on top — click for oldest first" : "Oldest on top — click for newest first";
+function placeRow(p, el) {                 // insert at this panel's "newest" end
+  if (p.newestTop) p.body.insertBefore(el, p.body.firstChild);
   else p.body.appendChild(el);
+}
+function flipPanel(p) {                     // per-card direction toggle
+  p.newestTop = !p.newestTop;
+  Array.from(p.body.children).reverse().forEach((r) => p.body.appendChild(r));
+  if (p.jump) p.jump.textContent = jumpLabel(p.newestTop);
+  if (p.flipBtn) p.flipBtn.title = flipTitle(p.newestTop);
+  p.pinned = true; p.lastAuto = Date.now();
+  p.body.scrollTop = p.newestTop ? 0 : p.body.scrollHeight;
 }
 
 // ---------- per-client overlay + own-voice toggles ----------
@@ -473,12 +483,13 @@ function panelFor(client) {
   const title = document.createElement("span"); title.textContent = clientLabel(client);
   const spk = document.createElement("span"); spk.className = "cspk";   // live "N speaking" for THIS client
   const cnt = document.createElement("span"); cnt.className = "cnt"; cnt.textContent = "0";
+  const flip = document.createElement("span"); flip.className = "tcol-flip"; flip.innerHTML = icon("arrow-up-down");
   const clr = document.createElement("span"); clr.className = "tcol-clear"; clr.textContent = "clear";
   clr.title = "Clear this client's transcript";
-  head.appendChild(dot); head.appendChild(title); head.appendChild(spk); head.appendChild(cnt); head.appendChild(clr);
+  head.appendChild(dot); head.appendChild(title); head.appendChild(spk); head.appendChild(cnt); head.appendChild(flip); head.appendChild(clr);
 
   const body = document.createElement("div"); body.className = "tcol-body";
-  const jump = document.createElement("button"); jump.className = "jump"; jump.textContent = jumpLabel();
+  const jump = document.createElement("button"); jump.className = "jump"; jump.textContent = jumpLabel(newestTop());
 
   col.appendChild(head); col.appendChild(body); col.appendChild(jump);
   // keep columns ordered by label for stable layout
@@ -487,27 +498,30 @@ function panelFor(client) {
   if (after) box.insertBefore(col, after); else box.appendChild(col);
   col._label = clientLabel(client);
 
-  // "pinned" = scrolled to the newest end (top when newest_at_top, else bottom)
-  const p = { col, body, jump, cnt, spk, pinned: true, n: 0, cur: {}, lastAuto: 0, jt: null };
+  // "pinned" = scrolled to the newest end (top when newestTop, else bottom). Direction is per-panel,
+  // seeded from the global default and flippable on the card itself.
+  const p = { col, body, jump, cnt, spk, flipBtn: flip, newestTop: newestTop(), pinned: true, n: 0, cur: {}, lastAuto: 0, jt: null };
+  flip.title = flipTitle(p.newestTop);
+  flip.onclick = () => flipPanel(p);
   clr.onclick = () => { body.innerHTML = ""; p.cur = {}; p.n = 0; cnt.textContent = "0"; };
   body.addEventListener("scroll", () => {
     if (Date.now() - p.lastAuto < 130) return;            // ignore our own auto-scroll -> no flicker
-    const atEnd = newestTop() ? (body.scrollTop < 28)
+    const atEnd = p.newestTop ? (body.scrollTop < 28)
                               : (body.scrollTop + body.clientHeight >= body.scrollHeight - 28);
     if (atEnd) { p.pinned = true; jump.style.display = "none"; if (p.jt) { clearTimeout(p.jt); p.jt = null; } }
     else { p.pinned = false; if (!p.jt) p.jt = setTimeout(() => { if (!p.pinned) jump.style.display = "block"; p.jt = null; }, 180); }
   });
   jump.addEventListener("click", () => {
     p.pinned = true; jump.style.display = "none"; p.lastAuto = Date.now();
-    body.scrollTop = newestTop() ? 0 : body.scrollHeight;
+    body.scrollTop = p.newestTop ? 0 : body.scrollHeight;
   });
   panels[key] = p;
   return p;
 }
 
-function pinScroll(p) { if (p.pinned) { p.lastAuto = Date.now(); p.body.scrollTop = newestTop() ? 0 : p.body.scrollHeight; } }
+function pinScroll(p) { if (p.pinned) { p.lastAuto = Date.now(); p.body.scrollTop = p.newestTop ? 0 : p.body.scrollHeight; } }
 function capLines(p) {                       // drop the OLDEST rows (opposite end from newest)
-  while (p.body.children.length > 200) p.body.removeChild(newestTop() ? p.body.lastChild : p.body.firstChild);
+  while (p.body.children.length > 200) p.body.removeChild(p.newestTop ? p.body.lastChild : p.body.firstChild);
 }
 // per-client live "N speaking" badge — each pane shows ONLY its own client's active streams
 // (iterate panels, not the heartbeat, so a client that goes quiet/absent clears its own badge)
@@ -519,13 +533,18 @@ function updateSpeaking(clients) {
     p.spk.textContent = a ? a + " speaking" : "";
   }
 }
-// flip every panel's existing rows + scroll anchor when the direction setting changes
+// the global "Newest on top" setting resets every panel to that direction (per-card flips override until then)
 function applyDirection() {
+  const top = newestTop();
   Object.values(panels).forEach((p) => {
-    Array.from(p.body.children).reverse().forEach((r) => p.body.appendChild(r));
-    if (p.jump) p.jump.textContent = jumpLabel();
+    if (p.newestTop !== top) {
+      p.newestTop = top;
+      Array.from(p.body.children).reverse().forEach((r) => p.body.appendChild(r));
+    }
+    if (p.jump) p.jump.textContent = jumpLabel(p.newestTop);
+    if (p.flipBtn) p.flipBtn.title = flipTitle(p.newestTop);
     p.pinned = true; p.lastAuto = Date.now();
-    p.body.scrollTop = newestTop() ? 0 : p.body.scrollHeight;
+    p.body.scrollTop = p.newestTop ? 0 : p.body.scrollHeight;
   });
 }
 

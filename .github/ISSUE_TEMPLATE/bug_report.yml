@@ -1,0 +1,48 @@
+name: Bug report
+description: Report a problem with whispercord
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for taking the time to file a report.
+  - type: input
+    id: version
+    attributes:
+      label: App version
+      description: Shown in Settings → About (e.g. 0.2.0).
+      placeholder: "0.2.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Where did it happen?
+      options:
+        - Native UI (WinUI app)
+        - Transcription engine / backend
+        - Overlay
+        - Discord capture
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you expect, and what actually happened?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+  - type: textarea
+    id: logs
+    attributes:
+      label: Console output
+      description: Paste relevant lines from the Console tab. This is automatically formatted.
+      render: shell

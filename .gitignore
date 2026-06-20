@@ -11,6 +11,14 @@ build/
 dist/
 *.manifest
 
+# .NET / WinUI build output (native-ui)
+[Bb]in/
+[Oo]bj/
+dist-native/
+
+# Machine-specific MCP/tooling config (absolute local paths)
+.mcp.json
+
 # User-writable runtime data
 config.json
 cache/
