@@ -55,7 +55,8 @@ DEFAULTS = {
         "min_rms_dbfs": -50.0,          # below this loudness, skip the model entirely (silence)
         "require_speaking": True,       # end a mic utterance once Discord's own speaking indicator
                                         # says the user isn't speaking (kills bleed/comfort-noise loops)
-        "speaking_grace_s": 1.0,        # how long the indicator must read "not speaking" before cutting
+        "speaking_grace_s": 2.5,        # how long the indicator must read "not speaking" before cutting;
+                                        # keep well above natural between-sentence pauses to avoid chopping
         "vad": True,                    # Silero VAD strips non-speech regions
         "no_speech_threshold": 0.6,     # segment no_speech_prob above this is suspect
         "min_avg_logprob": -1.0,        # segment avg_logprob below this is suspect

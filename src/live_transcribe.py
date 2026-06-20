@@ -70,13 +70,21 @@ SCREEN_LABEL = CAP.get("screenshare_label", " (stream)")
 SCREEN_DETECT_S = CAP.get("screenshare_detect_s", 18.0)
 MAX_STALE_S = CAP.get("max_stale_s", 3.0)   # finalize a mic utterance whose transcript stops changing
 KEEPALIVE_S = 2.0                   # ping the overlay this often while a stream is still active
+# --- name binding: accumulate evidence so the identity with the most hits wins (anti-blip) ---
+NAME_VOTE_CAP = 12.0                # ceiling on accumulated confidence per identity
+NAME_SWITCH_MARGIN = 4.0            # a challenger must lead the bound name by this many votes to win
+NAME_VOTE_NATIVE = 2.0             # weight of an authoritative ssrc-map confirmation
+NAME_VOTE_CORR = 1.0               # weight of a speaking-correlation confirmation
+NAME_VOTE_DECAY = 0.5             # per-tick decay of identities that didn't get a vote this tick
 
 # --- silence/hallucination gating (kills "Thank you." on quiet audio) ---
 GATE = CFG["gating"]
 GATE_DBFS = GATE["min_rms_dbfs"]
 USE_VAD = GATE["vad"]
 REQUIRE_SPEAKING = GATE.get("require_speaking", True)   # trust Discord's speaking indicator to end utterances
-SPK_GRACE_S = GATE.get("speaking_grace_s", 1.0)
+# floor the grace: Discord's indicator gaps during normal speech, so too-short a window chops one
+# utterance into several lines. 2 s sits above natural between-sentence pauses.
+SPK_GRACE_S = max(2.0, float(GATE.get("speaking_grace_s", 2.5) or 2.5))
 NO_SPEECH = GATE["no_speech_threshold"]
 MIN_LOGPROB = GATE["min_avg_logprob"]
 def emit_progress(stage, label, pct=None, done=False):
@@ -116,6 +124,7 @@ cdp_clients = set()                            # client exe names with a live CD
 client_scripts = {}                            # client exe name -> live Frida script (for set_ssrcs rpc)
 self_gate = {}                                 # client -> bool: capture my mic for this client right now
 corr = collections.defaultdict(dict)           # src -> {uid: co-occurrence score} for speaker binding
+bind_votes = collections.defaultdict(lambda: collections.defaultdict(float))  # src -> {uid: naming votes}
 lock = threading.Lock()
 
 
@@ -132,6 +141,34 @@ def display_name(src, name):
     return (base + SCREEN_LABEL) if kind_of(src) == "stream" else base
 
 SELF = CFG.get("self_transcribe", {})          # own-voice transcription options
+
+
+def apply_live_config(cfg):
+    """Apply settings that don't need an engine restart, pushed live from the UI over the relay
+    control bus. Reassigns the module-level knobs the loops read each pass. Model/device/compute/
+    relay-port are deliberately NOT touched here — those still require a restart."""
+    global CAP, CAP_VOICE, CAP_SCREEN, SCREEN_DETECT_S, MAX_STALE_S, SCREEN_LABEL
+    global GATE, GATE_DBFS, USE_VAD, NO_SPEECH, MIN_LOGPROB, DROP, REQUIRE_SPEAKING, SPK_GRACE_S
+    global LANGUAGE, BEAM, SELF
+    try:
+        CAP = cfg.get("capture") or CAP
+        CAP_VOICE = CAP.get("voice", True); CAP_SCREEN = CAP.get("screenshare", True)
+        SCREEN_LABEL = CAP.get("screenshare_label", SCREEN_LABEL)
+        SCREEN_DETECT_S = CAP.get("screenshare_detect_s", 18.0); MAX_STALE_S = CAP.get("max_stale_s", 3.0)
+        GATE = cfg.get("gating") or GATE
+        GATE_DBFS = GATE["min_rms_dbfs"]; USE_VAD = GATE["vad"]
+        NO_SPEECH = GATE["no_speech_threshold"]; MIN_LOGPROB = GATE["min_avg_logprob"]
+        DROP = set(_norm(p) for p in GATE.get("drop_phrases", []))
+        REQUIRE_SPEAKING = GATE.get("require_speaking", True)
+        SPK_GRACE_S = max(2.0, float(GATE.get("speaking_grace_s", 2.5) or 2.5))
+        LANGUAGE = (cfg.get("language") or "").strip() or None
+        BEAM = int(cfg.get("beam_size", 1))
+        SELF = cfg.get("self_transcribe") or SELF
+        print("[cfg] live settings applied (no restart)")
+    except Exception as e:
+        print("[cfg] live apply failed: %s" % e)
+
+
 DEBUG_BIND = os.environ.get("VT_DEBUG_BIND") == "1"   # verbose speaker-binding correlation log
 DEBUG_EVENTS = os.environ.get("VT_DEBUG_EVENTS") == "1"   # verbose voice-event diffing log
 
@@ -255,16 +292,15 @@ def attach_hook():
 
 # ---------------- own-voice capture (microphone, gated by Discord state) ----------------
 def self_capture_thread():
-    """Capture the local mic and route it to each client whose self-gate is open
-    (set by mapping_thread from Discord's speaking/mute state). Keyed 'self:<client>'."""
-    if not SELF.get("enabled"):
-        return
+    """Capture the local mic and route it to each client whose self-gate is open (set by
+    mapping_thread from Discord's speaking/mute state). Keyed 'self:<client>'. Runs always and
+    opens/closes the mic from the live SELF config, so enabling own-voice or switching the input
+    device applies without an engine restart."""
     try:
         import sounddevice as sd
     except Exception as e:
         print("[self] sounddevice unavailable (%s); own-voice disabled" % e)
         return
-    dev = SELF.get("device")
 
     def push(b16):
         now = time.time()
@@ -276,23 +312,39 @@ def self_capture_thread():
                     last_frame[key] = now
                     src_client[key] = client
 
-    def cb16(indata, frames, tinfo, status):
-        push(indata.tobytes())
-
-    def cb48(indata, frames, tinfo, status):
-        push(np.ascontiguousarray(indata[::3, 0]).tobytes())   # 48k -> 16k (L)
-
-    for sr, ch, cb in ((16000, 1, cb16), (48000, 1, cb48)):
-        try:
-            stream = sd.InputStream(samplerate=sr, channels=ch, dtype="int16",
+    def open_mic(dev):
+        # 16k preferred; fall back to 48k (downsampled by 3) for devices that won't do 16k
+        for sr, factor in ((16000, 1), (48000, 3)):
+            cb = ((lambda indata, frames, t, s: push(indata.tobytes())) if factor == 1
+                  else (lambda indata, frames, t, s: push(np.ascontiguousarray(indata[::factor, 0]).tobytes())))
+            try:
+                st = sd.InputStream(samplerate=sr, channels=1, dtype="int16",
                                     blocksize=int(sr * 0.1), device=dev, callback=cb)
-            stream.start()
-            print("[self] mic capture @%dHz (device=%s)" % (sr, dev if dev is not None else "default"))
-            while True:
-                time.sleep(1)
-        except Exception as e:
-            print("[self] mic open @%dHz failed: %s" % (sr, e))
-    print("[self] could not open the microphone; own-voice disabled")
+                st.start()
+                print("[self] mic capture @%dHz (device=%s)" % (sr, dev if dev is not None else "default"))
+                return st
+            except Exception as e:
+                print("[self] mic open @%dHz failed: %s" % (sr, e))
+        return None
+
+    stream = None
+    open_dev = object()        # sentinel: nothing opened yet (distinct from device=None "default")
+    while True:
+        want = bool(SELF.get("enabled"))
+        dev = SELF.get("device")
+        if want and (stream is None or dev != open_dev):
+            if stream is not None:
+                try: stream.stop(); stream.close()
+                except Exception: pass
+                stream = None
+            stream = open_mic(dev)
+            open_dev = dev if stream is not None else object()    # retry next loop if it failed
+        elif not want and stream is not None:
+            try: stream.stop(); stream.close()
+            except Exception: pass
+            stream = None; open_dev = object()
+            print("[self] mic capture stopped")
+        time.sleep(0.5)
 
 
 # ---------------- relay (WebSocket) ----------------
@@ -316,6 +368,8 @@ def start_relay():
                 if obj.get("type") == "setKeywords":
                     kws = [str(k) for k in (obj.get("keywords") or [])]
                     broadcast({"type": "keywords", "keywords": kws})
+                elif obj.get("type") == "setConfig":
+                    apply_live_config(obj.get("config") or {})    # live-apply restart-free settings
         except Exception:
             pass
         finally:
@@ -413,13 +467,18 @@ def mapping_thread():
 
     def resolve_user(c, uid):
         info = user_cache.get(uid)
-        if not info:
+        # Re-resolve when we have nothing OR the cached entry has no avatar: a user first seen "cold"
+        # (e.g. the instant they join, before their avatar loads) would otherwise be cached avatarless
+        # forever, so every later event for them shows no picture.
+        if not info or not info.get("avatar"):
             try:
-                info = user_info(c, uid)            # resolve via the SAME client
+                fresh = user_info(c, uid)           # resolve via the SAME client
             except Exception:
-                info = None
-            if info:
-                user_cache[uid] = info; save_user_cache()
+                fresh = None
+            if fresh and fresh.get("avatar"):
+                user_cache[uid] = fresh; save_user_cache(); info = fresh
+            elif fresh and not info:
+                info = fresh                        # keep the name now; don't cache until an avatar lands
         return info
 
     def bind(s, uid, client, c):
@@ -444,6 +503,25 @@ def mapping_thread():
         if info and info.get("userId"):
             broadcast({"type": "rename", "userId": s, "name": display_name(s, info["name"]),
                        "avatar": info.get("avatar"), "client": client})
+
+    def confirm_bind(s, uid, client, c, weight):
+        """Accumulate naming evidence per source and bind to the identity with the MOST hits,
+        replacing an existing name only when a challenger clearly leads it. A single blip (one
+        stray ssrc-map read or correlation tick) can't flip a name that has been consistent; a
+        genuine, sustained change still wins after it overtakes by NAME_SWITCH_MARGIN."""
+        v = bind_votes[s]
+        v[uid] = min(NAME_VOTE_CAP, v[uid] + weight)
+        for u in list(v):                       # decay identities with no support this tick
+            if u != uid:
+                v[u] -= NAME_VOTE_DECAY
+                if v[u] <= 0:
+                    del v[u]
+        leader = max(v, key=v.get)
+        cur = (src2user.get(s) or {}).get("userId")
+        if cur == leader:
+            return
+        if cur is None or v[leader] >= v.get(cur, 0.0) + NAME_SWITCH_MARGIN:
+            bind(s, leader, client, c)
 
     def emit_event(kind, uid, client, c):
         info = resolve_user(c, uid) or {"name": "user " + uid[-4:], "avatar": None}
@@ -516,9 +594,17 @@ def mapping_thread():
                     sst = None
                 open_ = False
                 if sst and sst.get("inCall"):
-                    ok_mute = (not SELF.get("only_when_unmuted", True)) or (not sst.get("muted"))
-                    ok_speak = (not SELF.get("require_discord_speaking", True)) or sst.get("speaking")
-                    open_ = bool(ok_mute and ok_speak)
+                    needs_unmute = SELF.get("only_when_unmuted", True)
+                    needs_speak = SELF.get("require_discord_speaking", True)
+                    ok_mute = (not needs_unmute) or (not sst.get("muted"))
+                    ok_speak = (not needs_speak) or bool(sst.get("speaking"))
+                    # Per-client gating: only open when THIS client confirms the conditions. If a gate
+                    # is required but this client's state isn't reliably readable (DOM-only, call off
+                    # screen), fail closed so a muted/PTT background client can't leak the mic.
+                    if (needs_unmute or needs_speak) and not sst.get("reliable"):
+                        open_ = False
+                    else:
+                        open_ = bool(ok_mute and ok_speak)
                 with lock:
                     self_gate[client] = open_
                 key = "self:" + client
@@ -597,7 +683,7 @@ def mapping_thread():
                 if ent and ent.get("userId"):
                     native_kind.add(s)
                     set_kind(s, "stream" if ent.get("kind") == "stream" else "voice", client)
-                    bind(s, ent["userId"], client, c)
+                    confirm_bind(s, ent["userId"], client, c, NAME_VOTE_NATIVE)
             # (2) fallback ONLY for clients whose renderer stores are unreachable, so (1) gave no
             #     ssrc map: a source that runs continuously past the threshold while someone is
             #     screensharing is screenshare audio, not speech; one with normal speech gaps heals.
@@ -608,7 +694,7 @@ def mapping_thread():
                     if kind_of(s) != "stream":
                         set_kind(s, "stream", client)
                         if len(streamers) == 1:           # unambiguous owner
-                            bind(s, streamers[0], client, c)
+                            confirm_bind(s, streamers[0], client, c, NAME_VOTE_NATIVE)
                 elif kind_of(s) == "stream":
                     set_kind(s, "voice", client)          # heuristic misfire heals after a pause
 
@@ -652,13 +738,13 @@ def mapping_thread():
                     continue
                 best = max(cands, key=cands.get); bestv = cands[best]
                 second = max((v for u, v in cands.items() if u != best), default=0.0)
-                cur = (src2user.get(s) or {}).get("userId")
-                # hysteresis: keep an existing binding unless a challenger clearly beats it,
-                # so a transient blip doesn't make a name flap between users
-                if cur is not None and best != cur and bestv < cands.get(cur, 0.0) * 1.3 + 2:
-                    continue
+                # cast a correlation vote only on clear evidence; confirm_bind owns the hysteresis,
+                # so a noisy tick adds at most one vote and can't flip a well-established name.
                 if bestv >= second * 1.5 + 1 and (bestv >= 2 if solo else bestv >= 4):
-                    bind(s, best, client, c); taken[best] = s
+                    confirm_bind(s, best, client, c, NAME_VOTE_CORR)
+                    bound = (src2user.get(s) or {}).get("userId")
+                    if bound:
+                        taken[bound] = s          # reserve whoever the source is actually bound to
             if DEBUG_BIND and now - st0.get("dbg_t", 0) > 2.0:
                 st0["dbg_t"] = now
                 summ = []

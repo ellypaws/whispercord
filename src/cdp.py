@@ -144,12 +144,20 @@ window.__vtr = (() => {
     const s = stores(); if (!s.US) return null;
     try {
       const me = s.US.getCurrentUser && s.US.getCurrentUser(); if (!me) return null;
-      const ch = s.RCS && s.RCS.getChannelId && s.RCS.getChannelId();
+      const ch = s.RCS && s.RCS.getChannelId && s.RCS.getChannelId();   // THIS client's voice channel
       let muted = false, deaf = false, speaking = false;
-      try { if (s.MES && s.MES.isSelfMute) muted = !!s.MES.isSelfMute(); } catch (e) {}
-      try { if (s.MES && s.MES.isSelfDeaf) deaf = !!s.MES.isSelfDeaf(); } catch (e) {}
+      // Prefer the actual voice-connection self state for the channel THIS client is connected to.
+      // It's per-connection and independent of what's on screen, so a client muted in the background
+      // still reads as muted (MediaEngineStore is only a fallback).
+      let vs = null;
+      try { if (ch && s.VSS && s.VSS.getVoiceStatesForChannel) vs = (s.VSS.getVoiceStatesForChannel(ch) || {})[me.id] || null; } catch (e) {}
+      if (vs) { muted = !!(vs.selfMute || vs.mute || vs.suppress); deaf = !!(vs.selfDeaf || vs.deaf); }
+      else {
+        try { if (s.MES && s.MES.isSelfMute) muted = !!s.MES.isSelfMute(); } catch (e) {}
+        try { if (s.MES && s.MES.isSelfDeaf) deaf = !!s.MES.isSelfDeaf(); } catch (e) {}
+      }
       try { if (s.SS && s.SS.isSpeaking) speaking = !!s.SS.isSpeaking(me.id); } catch (e) {}
-      return { selfId: me.id, channelId: ch || null, inCall: !!ch, muted: muted, deaf: deaf, speaking: speaking };
+      return { selfId: me.id, channelId: ch || null, inCall: !!ch, muted: muted, deaf: deaf, speaking: speaking, reliable: true };
     } catch (e) { return null; }
   };
   const wpUser = (uid) => {
@@ -295,7 +303,9 @@ window.__vtr = (() => {
     });
     let speaking = false;
     if (selfId) { const r = roster(); if (r[selfId]) speaking = !!r[selfId].fiberSpeaking; }
-    return { selfId: selfId, channelId: inCall ? 1 : null, inCall: inCall, muted: muted, deaf: deaf, speaking: speaking };
+    // reliable:false — scraped from the DOM, only valid when this client's call panel is on screen;
+    // the own-voice gate fails closed on an unreliable read so a muted/background client won't leak.
+    return { selfId: selfId, channelId: inCall ? 1 : null, inCall: inCall, muted: muted, deaf: deaf, speaking: speaking, reliable: false };
   };
 
   // ======== public API: PRIMARY (webpack) first, FALLBACK (DOM) second ========
