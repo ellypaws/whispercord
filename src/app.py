@@ -28,6 +28,38 @@ def run_backend():
     live_transcribe.main()
 
 
+def cleanup_overlays(log=None):
+    """Remove injected overlay DOM from every reachable Discord debug port."""
+    try:
+        from config import load
+        from cdp import CDP, cleanup_overlay
+    except Exception as e:
+        if log:
+            log("[ui] overlay cleanup unavailable: %s" % e)
+        return 0
+
+    cfg = load()
+    ports = cfg.get("cdp_ports") or [cfg.get("cdp_port", 9223)]
+    cleaned = 0
+    for port in dict.fromkeys(ports):
+        c = None
+        try:
+            c = CDP(port, http_timeout=0.5, open_timeout=1.0, command_timeout=1.0)
+            cleanup_overlay(c)
+            cleaned += 1
+        except Exception:
+            pass
+        finally:
+            try:
+                if c:
+                    c.close()
+            except Exception:
+                pass
+    if log:
+        log("[ui] overlay cleanup sent to %d client(s)" % cleaned)
+    return cleaned
+
+
 # ----------------------------------------------------------------------------- engine control
 PROG_TAG = "[[VTPROG]]"
 PROG_IDLE = {"stage": "idle", "label": "", "pct": None, "done": True, "active": False}
@@ -80,6 +112,7 @@ class Engine:
         self.progress = dict(PROG_IDLE)   # stream closed -> engine exited; clear the banner
 
     def stop(self):
+        cleanup_overlays(self.log.append)
         if self.proc and self.proc.poll() is None:
             try:
                 self.proc.terminate()
@@ -256,7 +289,10 @@ def run_gui():
 
 
 def main():
-    if "--backend" in sys.argv:
+    if "--cleanup-overlay" in sys.argv:
+        n = cleanup_overlays(print)
+        print("[ui] overlay cleanup complete (%d client(s))" % n)
+    elif "--backend" in sys.argv:
         run_backend()
     else:
         run_gui()

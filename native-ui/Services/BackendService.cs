@@ -91,6 +91,8 @@ public sealed class BackendService : IDisposable
             _process = null;
         }
 
+        await CleanupOverlaysAsync().ConfigureAwait(false);
+
         if (proc is null)
         {
             StateChanged?.Invoke("stopped");
@@ -113,6 +115,56 @@ public sealed class BackendService : IDisposable
         {
             proc.Dispose();
             StateChanged?.Invoke("stopped");
+        }
+    }
+
+    private async Task CleanupOverlaysAsync()
+    {
+        Directory.CreateDirectory(_paths.NativeUi);
+        var useVenv = File.Exists(_paths.VenvPythonPath);
+        var start = new ProcessStartInfo
+        {
+            FileName = useVenv ? _paths.VenvPythonPath : "py",
+            Arguments = useVenv
+                ? "-u \"..\\src\\app.py\" --cleanup-overlay"
+                : "-3 -u \"..\\src\\app.py\" --cleanup-overlay",
+            WorkingDirectory = _paths.NativeUi,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true
+        };
+
+        start.Environment["PYTHONUTF8"] = "1";
+        try
+        {
+            using var cleanup = Process.Start(start);
+            if (cleanup is null)
+            {
+                return;
+            }
+
+            var outputTask = cleanup.StandardOutput.ReadToEndAsync();
+            var errorTask = cleanup.StandardError.ReadToEndAsync();
+            var exitTask = cleanup.WaitForExitAsync();
+            var complete = await Task.WhenAny(exitTask, Task.Delay(TimeSpan.FromSeconds(8))).ConfigureAwait(false);
+            if (complete != exitTask)
+            {
+                try { cleanup.Kill(entireProcessTree: true); } catch { }
+                LogLine?.Invoke("[native] overlay cleanup timed out");
+                return;
+            }
+
+            var output = await outputTask.ConfigureAwait(false);
+            var error = await errorTask.ConfigureAwait(false);
+            foreach (var line in (output + error).Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                LogLine?.Invoke(line);
+            }
+        }
+        catch (Exception ex)
+        {
+            LogLine?.Invoke("[native] overlay cleanup failed: " + ex.Message);
         }
     }
 
@@ -146,6 +198,6 @@ public sealed class BackendService : IDisposable
 
     public void Dispose()
     {
-        _ = StopAsync();
+        StopAsync().GetAwaiter().GetResult();
     }
 }

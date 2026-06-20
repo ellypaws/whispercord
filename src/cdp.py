@@ -16,10 +16,11 @@ from websockets.sync.client import connect
 
 
 class CDP:
-    def __init__(self, port=9223):
+    def __init__(self, port=9223, http_timeout=1.5, open_timeout=5, command_timeout=10.0):
         self.port = port
-        ver = json.load(urllib.request.urlopen("http://127.0.0.1:%d/json/version" % port, timeout=1.5))
-        self.ws = connect(ver["webSocketDebuggerUrl"], max_size=None, open_timeout=5)
+        self.command_timeout = command_timeout
+        ver = json.load(urllib.request.urlopen("http://127.0.0.1:%d/json/version" % port, timeout=http_timeout))
+        self.ws = connect(ver["webSocketDebuggerUrl"], max_size=None, open_timeout=open_timeout)
         self._id = 0
         infos = self._cmd("Target.getTargets")["result"]["targetInfos"]
         page = self._pick_page(infos)
@@ -41,7 +42,8 @@ class CDP:
             return 2 if "/channels/" in u else 1
         return max(pages, key=score)
 
-    def _cmd(self, method, params=None, sid=None, timeout=10.0):
+    def _cmd(self, method, params=None, sid=None, timeout=None):
+        timeout = self.command_timeout if timeout is None else timeout
         self._id += 1
         msg = {"id": self._id, "method": method, "params": params or {}}
         if sid:
@@ -349,3 +351,28 @@ def ssrc_map(cdp):
     `kind` is 'voice' | 'video' | 'stream'. `audio` lists audio ssrcs for the
     native offset auto-locator. Keys come back stringified from JSON."""
     return cdp.evaluate(_BOOT + "window.__vtr.ssrcMap()")
+
+
+OVERLAY_CLEANUP_JS = r"""
+(() => {
+  let removed = 0;
+  try {
+    if (window.__vtOverlay && window.__vtOverlay.destroy) window.__vtOverlay.destroy();
+  } catch (e) {}
+  try {
+    document.querySelectorAll('.vt-container,.vtlog,.vt-status,#vt-style').forEach((el) => {
+      removed++;
+      el.remove();
+    });
+  } catch (e) {}
+  try {
+    delete window.__vtOverlay;
+    delete window.__VT_CONFIG;
+  } catch (e) {}
+  return removed;
+})()
+"""
+
+
+def cleanup_overlay(cdp):
+    return cdp.evaluate(OVERLAY_CLEANUP_JS)
