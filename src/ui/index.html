@@ -131,6 +131,36 @@
   .fr-fill { height:100%; width:0; background:var(--accent); border-radius:999px; transition:width .3s; }
   .fr-fill.indet { width:38%; animation:fr-slide 1.2s ease-in-out infinite; }
   @keyframes fr-slide { 0% { margin-left:-38%; } 100% { margin-left:100%; } }
+  /* restart-needed bar */
+  .restartbar { display:flex; align-items:center; gap:10px; background:rgba(240,178,50,.12);
+                border-bottom:1px solid var(--warn); padding:8px 14px; flex:0 0 auto; font-size:12px; color:var(--txt); }
+  .restartbar .grow { flex:1; }
+  .restartbar button { padding:5px 12px; }
+  .lu { width:15px; height:15px; vertical-align:-3px; flex:0 0 auto; }
+  button .lu { vertical-align:-3px; margin-right:4px; }
+  /* circled (i) help + markdown popover */
+  .help-ic { display:inline-flex; align-items:center; justify-content:center; width:15px; height:15px; margin-left:6px;
+             color:var(--mut); cursor:pointer; vertical-align:-2px; }
+  .help-ic:hover { color:var(--accent); }
+  .help-ic svg { width:15px; height:15px; }
+  .help-pop { position:fixed; z-index:80; max-width:330px; background:var(--panel); border:1px solid var(--line);
+              border-radius:8px; padding:10px 12px; box-shadow:0 10px 30px rgba(0,0,0,.6); font-size:12px; line-height:1.5; color:var(--txt); }
+  .help-pop > :first-child { margin-top:0; } .help-pop > :last-child { margin-bottom:0; }
+  .help-pop code { background:var(--panel2); padding:1px 4px; border-radius:4px; font-family:ui-monospace,Consolas,monospace; font-size:11px; }
+  .help-pop a { color:var(--accent); }
+  .help-pop ul { margin:6px 0; padding-left:18px; } .help-pop li { margin:2px 0; }
+  .help-pop p { margin:6px 0; } .help-pop strong { color:#fff; }
+  /* downloaded models list */
+  .modelrow { display:flex; align-items:center; gap:10px; padding:7px 0; border-top:1px solid var(--line); }
+  .modelrow:first-child { border-top:0; }
+  .modelrow .nm { font-weight:600; }
+  .modelrow .badge { font-size:10px; color:#fff; background:var(--good); border-radius:999px; padding:1px 7px; }
+  .modelrow .sz { margin-left:auto; color:var(--mut); font-variant-numeric:tabular-nums; }
+  .modelrow .trash { cursor:pointer; color:var(--mut); display:inline-flex; padding:5px; border-radius:5px; }
+  .modelrow .trash:hover { color:var(--bad); background:rgba(242,63,67,.12); }
+  /* event icons + keyword highlight in the desktop transcript */
+  .tevent .lu { width:14px; height:14px; vertical-align:-2px; }
+  .tline .txt mark { background:var(--alert,#f04747); color:#fff; border-radius:3px; padding:0 2px; }
 </style>
 </head>
 <body>
@@ -151,6 +181,12 @@
     <span id="fr-pct" class="fr-pct"></span>
   </div>
   <div class="fr-track"><div id="fr-bar" class="fr-fill"></div></div>
+</div>
+
+<div id="restartbar" class="restartbar" style="display:none">
+  <span id="restartbar-text">Settings changed — restart the engine to apply.</span>
+  <span class="grow"></span>
+  <button id="restartbar-btn">Restart engine</button>
 </div>
 
 <div class="tabs">
@@ -194,6 +230,13 @@
           <option value="fil">Filipino</option>
         </select></div>
       <div class="hint" id="gpuhint"></div>
+    </div>
+
+    <div class="card">
+      <h2>Downloaded models</h2>
+      <div id="models"><div class="hint">No models downloaded yet.</div></div>
+      <div class="hint" style="margin-top:8px">Models are cached once and reused — switching between
+        downloaded models never re-downloads. Trash the ones you don't use to free disk space.</div>
     </div>
 
     <div class="card">

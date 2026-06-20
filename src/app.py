@@ -167,6 +167,29 @@ class Api:
         except Exception:
             return False
 
+    def list_models(self):
+        try:
+            import models
+            return models.list_models()
+        except Exception as e:
+            self.engine.log.append("[ui] list_models failed: %s" % e)
+            return []
+
+    def model_cached(self, name):
+        try:
+            import models
+            return bool(models.is_cached(name))
+        except Exception:
+            return False
+
+    def delete_model(self, name):
+        try:
+            import models
+            return bool(models.delete_model(name))
+        except Exception as e:
+            self.engine.log.append("[ui] delete_model failed: %s" % e)
+            return False
+
 
 # ----------------------------------------------------------------------------- tray (optional)
 def start_tray(window):

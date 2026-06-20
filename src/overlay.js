@@ -15,10 +15,32 @@
   const MIN_FADE = OV.min_fade_opacity != null ? OV.min_fade_opacity : 0.25;
   const LOG_H = OV.log_height || 300;
   const LOG_AUTOSCROLL = OV.log_autoscroll !== false;
-  const KEYWORDS = (AL.keywords || []).map((k) => String(k).toLowerCase()).filter(Boolean);
+  let KEYWORDS = (AL.keywords || []).map((k) => String(k).toLowerCase()).filter(Boolean);
   const ALERT_SOUND = AL.sound !== false;
   const ALERT_COLOR = AL.highlight || "#f04747";
   const LOG_MAX = 800;
+
+  // ---- inline Lucide icons (offline; 24x24 stroke) ----
+  const LU = {
+    "log-in": '<path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" x2="3" y1="12" y2="12"/>',
+    "log-out": '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/>',
+    "mic": '<path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/>',
+    "mic-off": '<line x1="2" x2="22" y1="2" y2="22"/><path d="M18.89 13.23A7.12 7.12 0 0 0 19 12v-2"/><path d="M5 10v2a7 7 0 0 0 12 5"/><path d="M15 9.34V5a3 3 0 0 0-5.68-1.33"/><path d="M9 9v3a3 3 0 0 0 5.12 2.12"/><line x1="12" x2="12" y1="19" y2="22"/>',
+    "volume-2": '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>',
+    "volume-x": '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="22" x2="16" y1="9" y2="15"/><line x1="16" x2="22" y1="9" y2="15"/>',
+    "video": '<path d="m22 8-6 4 6 4V8Z"/><rect width="14" height="12" x="2" y="6" rx="2" ry="2"/>',
+    "video-off": '<path d="M10.66 6H14a2 2 0 0 1 2 2v2.34l1 1L22 8v8"/><path d="M16 16a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h2l10 10Z"/><line x1="2" x2="22" y1="2" y2="22"/>',
+    "screen-share": '<path d="M13 3H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-3"/><path d="M8 21h8"/><path d="M12 17v4"/><path d="m17 8 5-5"/><path d="M17 3h5v5"/>',
+    "screen-share-off": '<path d="M13 3H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h7"/><path d="M8 21h8"/><path d="M12 17v4"/><path d="m22 3-5 5"/><path d="m17 3 5 5"/>',
+  };
+  const icon = (name) => '<svg class="vt-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + (LU[name] || "") + "</svg>";
+  const EVENT = {
+    joined: ["log-in", "joined", "#43b581"], left: ["log-out", "left", "#f04747"],
+    muted: ["mic-off", "muted", "#b5bac1"], unmuted: ["mic", "unmuted", "#43b581"],
+    deafened: ["volume-x", "deafened", "#b5bac1"], undeafened: ["volume-2", "undeafened", "#43b581"],
+    video_on: ["video", "turned camera on", "#5865f2"], video_off: ["video-off", "turned camera off", "#b5bac1"],
+    stream_on: ["screen-share", "started streaming", "#5865f2"], stream_off: ["screen-share-off", "stopped streaming", "#b5bac1"],
+  };
 
   // remove any prior overlay styles (incl. old un-id'd ones with the stale fade mask)
   document.querySelectorAll("style").forEach((s) => { if (s.id !== "vt-style" && /\.vt-container\s*\{/.test(s.textContent || "")) s.remove(); });
@@ -64,6 +86,11 @@
     .vtl-c{flex:1;min-width:0;word-wrap:break-word}
     .vtl-t{color:#72767d;font-size:11px;margin-right:5px}
     .vtl-n{font-weight:600;margin-right:5px}
+    .vt-ico{width:14px;height:14px;flex:0 0 auto;vertical-align:-2px}
+    .vtl-ev{display:flex;align-items:center;gap:6px;margin:3px 0;padding-left:6px;opacity:.78;font-size:12px;color:#b5bac1}
+    .vtl-ev .vt-ico{margin-top:0}
+    .vtl-ev b{color:#dbdee1;font-weight:600}
+    .vtl-ev .vtl-t{margin-right:0}
     .vt-text mark,.vtl mark{background:${ALERT_COLOR};color:#fff;border-radius:3px;padding:0 2px}`;
   document.head.appendChild(style);
 
@@ -131,6 +158,7 @@
     }
     if (name) b.nm.textContent = name;
     if (avatar && b.img && !b.img.src) b.img.src = avatar;
+    b.text = text || "";
     const kw = matchKeyword(text);
     setText(b.body, text || "", kw);
     if (kw && !b.alerted) { b.alerted = true; b.el.classList.add("vt-alert"); beep(); }
@@ -171,10 +199,33 @@
     const c = document.createElement("div"); c.className = "vtl-c";
     const t = document.createElement("span"); t.className = "vtl-t"; t.textContent = new Date(ts).toLocaleTimeString([], { hour12: false });
     const n = document.createElement("span"); n.className = "vtl-n"; n.textContent = (kw ? "🔔 " : "") + (name || "unknown") + ":"; n.style.color = colorFor(uid);
-    const b = document.createElement("span"); setText(b, text, kw);
+    const b = document.createElement("span"); b.className = "vtl-tx"; b.dataset.text = text || ""; setText(b, text, kw);
     c.append(t, n, b); row.append(av, c); logBody.appendChild(row);
     while (logBody.children.length > LOG_MAX) logBody.removeChild(logBody.firstChild);
     if (LOG_AUTOSCROLL && pinned) { lastAuto = Date.now(); logBody.scrollTop = logBody.scrollHeight; }
+  }
+  function logEvent(name, uid, event, ts) {
+    const meta = EVENT[event]; if (!meta) return;
+    const row = document.createElement("div"); row.className = "vtl-ev";
+    const t = document.createElement("span"); t.className = "vtl-t"; t.textContent = new Date(ts).toLocaleTimeString([], { hour12: false });
+    const ic = document.createElement("span"); ic.innerHTML = icon(meta[0]); ic.style.color = meta[2];
+    const tx = document.createElement("span");
+    const b = document.createElement("b"); b.textContent = name || "someone"; b.style.color = colorFor(uid);
+    tx.append(b, document.createTextNode(" " + meta[1]));
+    row.append(t, ic, tx); logBody.appendChild(row);
+    while (logBody.children.length > LOG_MAX) logBody.removeChild(logBody.firstChild);
+    if (LOG_AUTOSCROLL && pinned) { lastAuto = Date.now(); logBody.scrollTop = logBody.scrollHeight; }
+  }
+  // re-apply keyword highlighting to everything already on screen after a live keyword edit
+  function rehighlight() {
+    blocks.forEach((b) => { const kw = matchKeyword(b.text); setText(b.body, b.text || "", kw); if (kw && !b.alerted) { b.alerted = true; b.el.classList.add("vt-alert"); } });
+    logBody.querySelectorAll(".vtl-tx").forEach((tx) => {
+      const text = tx.dataset.text || ""; const kw = matchKeyword(text);
+      setText(tx, text, kw);
+      const row = tx.closest(".vtl"); if (row) row.classList.toggle("alert", !!kw);
+      const n = row && row.querySelector(".vtl-n");
+      if (n) { const base = n.textContent.replace(/^🔔 /, ""); n.textContent = (kw ? "🔔 " : "") + base; }
+    });
   }
   head.addEventListener("click", (e) => {
     const act = e.target.getAttribute("data-act");
@@ -215,7 +266,13 @@
       setStatus("", n > 0 ? "Listening · " + n + " speaking" : "Listening");
       return;
     }
+    if (m.type === "keywords") {              // live keyword edit from the desktop UI (global)
+      KEYWORDS = (m.keywords || []).map((k) => String(k).toLowerCase()).filter(Boolean);
+      rehighlight();
+      return;
+    }
     if (CLIENT && m.client && m.client !== CLIENT) return;   // ignore other clients' calls
+    if (m.type === "event") { logEvent(m.name, m.userId, m.event, m.ts || Date.now()); return; }
     if (m.type === "keepalive") {
       // the speaker is still talking even if this chunk had no words; keep the subtitle alive
       const b = blocks.get(m.userId);

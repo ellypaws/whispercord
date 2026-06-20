@@ -47,6 +47,7 @@ import websockets
 from faster_whisper import WhisperModel
 
 import paths
+import models as model_store
 from config import load as _load_config
 from locate import locate_rva       # runtime RVA auto-locator (survives Discord updates)
 CFG = _load_config()
@@ -102,6 +103,7 @@ src_kind = {}                                  # src -> 'voice' | 'stream' (scre
 native_kind = set()                            # srcs whose kind came from the renderer ssrc map (authoritative)
 active_since = {}                              # src -> time the current uninterrupted active run began
 last_emit = collections.defaultdict(float)     # src -> last time we sent the overlay anything
+last_loud = collections.defaultdict(float)     # src -> last time the audio was speech-level (above gate)
 hooked_clients = set()                         # client exe names the Frida hook attached to
 cdp_clients = set()                            # client exe names with a live CDP connection
 client_scripts = {}                            # client exe name -> live Frida script (for set_ssrcs rpc)
@@ -296,7 +298,19 @@ def start_relay():
         clients.add(ws)
         print("[relay] overlay connected")
         try:
-            await ws.wait_closed()
+            # the relay is also a tiny control bus: the desktop UI sends control messages
+            # (e.g. live keyword edits) and we fan them out to every overlay so highlighting
+            # updates without an engine restart.
+            async for msg in ws:
+                try:
+                    obj = json.loads(msg)
+                except Exception:
+                    continue
+                if obj.get("type") == "setKeywords":
+                    kws = [str(k) for k in (obj.get("keywords") or [])]
+                    broadcast({"type": "keywords", "keywords": kws})
+        except Exception:
+            pass
         finally:
             clients.discard(ws)
     async def main():
@@ -644,10 +658,27 @@ def main():
         except Exception as e:
             print("[cuda] setup failed (%s) - GPU may not load" % e)
     print("[whisper] loading '%s' on %s (%s)..." % (MODEL, DEVICE, COMPUTE))
-    # pct=None -> indeterminate bar; the HF download has no easy progress hook, and a cached
-    # model just loads, so this covers "downloading on first run" and "loading" with one banner.
-    emit_progress("model", "Loading speech model '%s' (downloads on first run)" % MODEL)
-    model = WhisperModel(MODEL, device=DEVICE, compute_type=COMPUTE)
+    # All models live in one app-owned cache. A model already there is loaded with
+    # local_files_only so it NEVER re-downloads (switching back and forth is free); only a
+    # genuinely missing model is fetched. The banner text reflects which case it is.
+    mr = model_store.cache_dir()
+    cached = model_store.is_cached(MODEL)
+    if cached:
+        emit_progress("model", "Loading speech model '%s'" % MODEL)
+    else:
+        print("[whisper] '%s' not cached - downloading once into %s" % (MODEL, mr))
+        emit_progress("model", "Downloading speech model '%s' (first use)" % MODEL)
+    try:
+        model = WhisperModel(MODEL, device=DEVICE, compute_type=COMPUTE,
+                             download_root=mr, local_files_only=cached)
+    except Exception as e:
+        if cached:                     # cache looked present but was incomplete -> refetch
+            print("[whisper] cached load failed (%s) - refetching" % e)
+            emit_progress("model", "Repairing speech model '%s'" % MODEL)
+            model = WhisperModel(MODEL, device=DEVICE, compute_type=COMPUTE,
+                                 download_root=mr, local_files_only=False)
+        else:
+            raise
     print("[whisper] ready (lang=%s, beam=%d)" % (LANGUAGE or "auto", BEAM))
     emit_progress("ready", "Engine ready", 100, done=True)
 
@@ -661,6 +692,14 @@ def main():
             return -120.0
         r = float(np.sqrt(np.mean(audio * audio)))
         return 20.0 * np.log10(max(r, 1e-7))
+
+    TAIL_BYTES = int(0.4 * 16000) * 2          # ~0.4 s of recent audio to gauge "still speaking"
+    def tail_loud(buf):
+        tail = buf[-TAIL_BYTES:] if len(buf) > TAIL_BYTES else buf
+        if not tail:
+            return False
+        audio = np.frombuffer(bytes(tail), dtype=np.int16).astype(np.float32) / 32768.0
+        return rms_dbfs(audio) >= GATE_DBFS
 
     def transcribe(b):
         audio = np.frombuffer(bytes(b), dtype=np.int16).astype(np.float32) / 32768.0
@@ -737,11 +776,18 @@ def main():
                     buffers[src] = bytearray(); announced.pop(src, None); interim_at.pop(src, None)
                     continue
                 dur = len(b) / 2 / 16000.0
-                silent = now - last_frame[src] >= SILENCE_S
+                # "Still speaking" is decided by LOUDNESS, not by frames merely arriving: the
+                # native stream keeps delivering quiet comfort-noise frames between words, which
+                # must neither extend an utterance nor keep a subtitle alive. An utterance ends
+                # after SILENCE_S with no speech-level audio, even while quiet frames trickle in.
+                if tail_loud(b):
+                    last_loud[src] = now
+                silent = now - last_loud.get(src, 0) >= SILENCE_S
                 if silent:
                     if dur >= MIN_UTT_S:
                         jobs.append((src, bytes(b), "final"))
-                    buffers[src] = bytearray(); announced.pop(src, None); interim_at.pop(src, None)
+                    buffers[src] = bytearray(); announced.pop(src, None)
+                    interim_at.pop(src, None); last_loud.pop(src, None)
                 else:
                     job_added = False
                     if not announced.get(src):
@@ -749,11 +795,13 @@ def main():
                         jobs.append((src, None, "start")); job_added = True   # instant "speaking…" feedback
                     if dur >= MAX_UTT_S:
                         jobs.append((src, bytes(b), "final")); job_added = True   # cap runaway utterances
-                        buffers[src] = bytearray(); announced.pop(src, None); interim_at.pop(src, None)
+                        buffers[src] = bytearray(); announced.pop(src, None)
+                        interim_at.pop(src, None); last_loud[src] = now   # keep run alive for the next chunk
                     elif dur >= MIN_UTT_S and now - interim_at[src] >= INTERIM_EVERY:
                         interim_at[src] = now
                         jobs.append((src, bytes(b), "interim")); job_added = True   # live partial
-                    # still receiving audio but produced no text this tick -> keep the subtitle alive
+                    # actively speaking but no text this tick -> keep the subtitle alive (loudness
+                    # gate above means quiet noise can't reach here)
                     if not job_added and announced.get(src) and now - last_emit.get(src, 0) >= KEEPALIVE_S:
                         keepalives.append(src)
         for src, b, kind in jobs:
