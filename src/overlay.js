@@ -288,6 +288,11 @@
       return;
     }
     if (m.type !== "transcript") return;
+    if (m.isFinal && !m.text) {        // utterance cut off with nothing to show -> expire it promptly
+      const b = blocks.get(m.userId);
+      if (b) { b.finalized = true; if (b.timeout) clearTimeout(b.timeout); b.timeout = setTimeout(() => removeBlk(m.userId), 400); }
+      return;
+    }
     sub(m.userId, m.name, m.avatar, m.text, m.isFinal);
     if (m.isFinal && m.text) log(m.name || "unknown", m.userId, m.avatar, m.text, m.ts || Date.now());
   }

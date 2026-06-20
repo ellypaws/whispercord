@@ -68,12 +68,15 @@ CAP_VOICE = CAP.get("voice", True)
 CAP_SCREEN = CAP.get("screenshare", True)
 SCREEN_LABEL = CAP.get("screenshare_label", " (stream)")
 SCREEN_DETECT_S = CAP.get("screenshare_detect_s", 18.0)
+MAX_STALE_S = CAP.get("max_stale_s", 3.0)   # finalize a mic utterance whose transcript stops changing
 KEEPALIVE_S = 2.0                   # ping the overlay this often while a stream is still active
 
 # --- silence/hallucination gating (kills "Thank you." on quiet audio) ---
 GATE = CFG["gating"]
 GATE_DBFS = GATE["min_rms_dbfs"]
 USE_VAD = GATE["vad"]
+REQUIRE_SPEAKING = GATE.get("require_speaking", True)   # trust Discord's speaking indicator to end utterances
+SPK_GRACE_S = GATE.get("speaking_grace_s", 1.0)
 NO_SPEECH = GATE["no_speech_threshold"]
 MIN_LOGPROB = GATE["min_avg_logprob"]
 def emit_progress(stage, label, pct=None, done=False):
@@ -104,6 +107,10 @@ native_kind = set()                            # srcs whose kind came from the r
 active_since = {}                              # src -> time the current uninterrupted active run began
 last_emit = collections.defaultdict(float)     # src -> last time we sent the overlay anything
 last_loud = collections.defaultdict(float)     # src -> last time the audio was speech-level (above gate)
+last_change = collections.defaultdict(float)   # src -> last time the transcript text actually changed
+last_text = {}                                 # src -> last emitted text (to detect a stuck/unchanging run)
+last_speaking = {}                             # uid -> last time Discord's indicator showed them speaking
+spk_poll = {}                                  # client -> last time a fresh speaking read succeeded
 hooked_clients = set()                         # client exe names the Frida hook attached to
 cdp_clients = set()                            # client exe names with a live CDP connection
 client_scripts = {}                            # client exe name -> live Frida script (for set_ssrcs rpc)
@@ -426,6 +433,18 @@ def mapping_thread():
             broadcast({"type": "rename", "userId": s, "name": nm,
                        "avatar": info["avatar"], "client": client})
 
+    def set_kind(s, kind, client):
+        """Change a source's voice/stream kind and re-broadcast its label if it's already
+        bound, so flipping a known speaker to 'stream' actually adds the (stream) suffix
+        in the UI (a plain bind() short-circuits once the userId is unchanged)."""
+        if src_kind.get(s, "voice") == kind:
+            return
+        src_kind[s] = kind
+        info = src2user.get(s)
+        if info and info.get("userId"):
+            broadcast({"type": "rename", "userId": s, "name": display_name(s, info["name"]),
+                       "avatar": info.get("avatar"), "client": client})
+
     def emit_event(kind, uid, client, c):
         info = resolve_user(c, uid) or {"name": "user " + uid[-4:], "avatar": None}
         if DEBUG_EVENTS:
@@ -473,6 +492,12 @@ def mapping_thread():
             try:
                 speaking = set(speaking_users(c))
                 st0["fails"] = 0
+                # record who Discord says is speaking so the transcription loop can trust the
+                # indicator (and note this client gives fresh speaking data, even when nobody speaks)
+                if client:
+                    spk_poll[client] = now
+                for _uid in speaking:
+                    last_speaking[_uid] = now
             except Exception:
                 st0["fails"] += 1
                 if st0["fails"] >= 5:           # tolerate transient errors; drop only after sustained failure
@@ -563,28 +588,29 @@ def mapping_thread():
                 run_len = {s: now - active_since.get(s, now) for s in active}
                 ssrcs = {s: src_ssrc.get(s) for s in active}
 
-            # (1) ssrc -> {userId, kind}: bind the stream straight to its owner, no guessing,
-            #     and classify mic ('voice') vs screenshare ('stream') from the renderer.
+            # (1) ssrc -> {userId, kind}: the authoritative path. Discord's renderer tells us, per
+            #     connection, which ssrc is a mic ('voice', default connection) and which is a Go
+            #     Live's screenshare audio ('stream', StreamRTCConnectionStore). Bind straight to
+            #     the owner and classify with no guessing.
             for s in active:
                 ent = ssrc2user.get(str(ssrcs.get(s) or ""))
                 if ent and ent.get("userId"):
-                    src_kind[s] = "stream" if ent.get("kind") == "stream" else "voice"
                     native_kind.add(s)
+                    set_kind(s, "stream" if ent.get("kind") == "stream" else "voice", client)
                     bind(s, ent["userId"], client, c)
-            # (2) heuristic fallback (until the ssrc offset is pinned): a stream that stays active
-            #     continuously past the threshold, while someone in the channel is screensharing,
-            #     is screenshare audio rather than speech. A stream with normal speech gaps self-heals
-            #     back to 'voice'. Native classification (1) always wins.
+            # (2) fallback ONLY for clients whose renderer stores are unreachable, so (1) gave no
+            #     ssrc map: a source that runs continuously past the threshold while someone is
+            #     screensharing is screenshare audio, not speech; one with normal speech gaps heals.
             for s in active:
                 if s in native_kind:
                     continue
                 if streamers and run_len.get(s, 0) >= SCREEN_DETECT_S:
                     if kind_of(s) != "stream":
-                        src_kind[s] = "stream"
-                        if len(streamers) == 1:        # unambiguous owner
+                        set_kind(s, "stream", client)
+                        if len(streamers) == 1:           # unambiguous owner
                             bind(s, streamers[0], client, c)
                 elif kind_of(s) == "stream":
-                    src_kind[s] = "voice"              # heuristic misfire heals after a pause
+                    set_kind(s, "voice", client)          # heuristic misfire heals after a pause
 
             # screenshare streams are excluded from speaker correlation (they have no speaking
             # user, so they would otherwise latch onto whoever happens to be talking).
@@ -729,7 +755,11 @@ def main():
         u = src2user.get(src)
         name = display_name(src, u["name"] if u else None)
         avatar = u["avatar"] if u else None
-        last_emit[src] = time.time()
+        now = time.time()
+        if text and text != last_text.get(src):    # new/changed words -> reset the stuck timer
+            last_text[src] = text
+            last_change[src] = now
+        last_emit[src] = now
         broadcast({"type": "transcript", "userId": src, "name": name, "avatar": avatar,
                    "text": text, "isFinal": final, "client": src_client.get(src),
                    "kind": kind_of(src), "ts": int(time.time() * 1000)})
@@ -776,27 +806,47 @@ def main():
                     buffers[src] = bytearray(); announced.pop(src, None); interim_at.pop(src, None)
                     continue
                 dur = len(b) / 2 / 16000.0
+                # Discord-speaking gate: for a MIC source whose user we know, trust Discord's own
+                # speaking indicator. Once it reads "not speaking" — yet audio keeps arriving
+                # (screenshare bleed, comfort noise, music) — stop treating it as live speech so the
+                # utterance can end instead of transcribing forever. Only applied when we have a fresh
+                # speaking read AND have actually seen this user speak, so flaky/unsupported clients
+                # fall back to the loudness gate alone. Screenshare ('stream') sources have no speaker.
+                uid = (src2user.get(src) or {}).get("userId")
+                cl = src_client.get(src)
+                spk_known = bool(REQUIRE_SPEAKING and kind_of(src) != "stream" and uid and cl
+                                 and now - spk_poll.get(cl, 0) < 2.0 and uid in last_speaking)
+                spk_silent = spk_known and (now - last_speaking.get(uid, 0) >= SPK_GRACE_S)
                 # "Still speaking" is decided by LOUDNESS, not by frames merely arriving: the
                 # native stream keeps delivering quiet comfort-noise frames between words, which
                 # must neither extend an utterance nor keep a subtitle alive. An utterance ends
                 # after SILENCE_S with no speech-level audio, even while quiet frames trickle in.
-                if tail_loud(b):
+                if tail_loud(b) and not spk_silent:
                     last_loud[src] = now
                 silent = now - last_loud.get(src, 0) >= SILENCE_S
-                if silent:
-                    if dur >= MIN_UTT_S:
+                # Stuck guard: audio keeps coming but the transcript stopped changing (Whisper looping
+                # on the same partial). Cut the mic utterance loose so its subtitle can finally expire.
+                stale = bool(kind_of(src) != "stream" and announced.get(src)
+                             and now - last_change.get(src, now) >= MAX_STALE_S)
+                if silent or stale:
+                    if stale and not silent:
+                        jobs.append((src, last_text.get(src, ""), "stale"))  # finalize last partial, no re-transcribe
+                    elif dur >= MIN_UTT_S:
                         jobs.append((src, bytes(b), "final"))
                     buffers[src] = bytearray(); announced.pop(src, None)
                     interim_at.pop(src, None); last_loud.pop(src, None)
+                    last_change.pop(src, None); last_text.pop(src, None)
                 else:
                     job_added = False
                     if not announced.get(src):
                         announced[src] = True
+                        last_change[src] = now      # baseline the stuck timer at the utterance's start
                         jobs.append((src, None, "start")); job_added = True   # instant "speaking…" feedback
                     if dur >= MAX_UTT_S:
                         jobs.append((src, bytes(b), "final")); job_added = True   # cap runaway utterances
                         buffers[src] = bytearray(); announced.pop(src, None)
                         interim_at.pop(src, None); last_loud[src] = now   # keep run alive for the next chunk
+                        last_change[src] = now
                     elif dur >= MIN_UTT_S and now - interim_at[src] >= INTERIM_EVERY:
                         interim_at[src] = now
                         jobs.append((src, bytes(b), "interim")); job_added = True   # live partial
@@ -816,6 +866,10 @@ def main():
                 if t:
                     print("  [%s] %s" % (display_name(src, (src2user.get(src) or {}).get("name")), t))
                     emit(src, t, True)
+            elif kind == "stale":
+                # Whisper got stuck; b carries the last partial. Finalize it (or an empty final to
+                # clear the overlay) WITHOUT re-running the model on the same wedged audio.
+                emit(src, (b or "").strip() if isinstance(b, str) else "", True)
         for src in keepalives:
             keepalive(src)
 

@@ -22,6 +22,8 @@ DEFAULTS = {
         "screenshare_label": " (stream)",   # suffix added to a streamer's name for their stream audio
         "screenshare_detect_s": 18.0,   # heuristic fallback: a stream active this long without a
                                         # silence gap is treated as screenshare (until native SSRC kind known)
+        "max_stale_s": 3.0,             # cut a microphone utterance loose if its transcript stops
+                                        # changing this long (Whisper stuck looping on the same partial)
     },
     "overlay": {
         "subtitle_timeout_ms": 8000,
@@ -51,6 +53,9 @@ DEFAULTS = {
     },
     "gating": {
         "min_rms_dbfs": -50.0,          # below this loudness, skip the model entirely (silence)
+        "require_speaking": True,       # end a mic utterance once Discord's own speaking indicator
+                                        # says the user isn't speaking (kills bleed/comfort-noise loops)
+        "speaking_grace_s": 1.0,        # how long the indicator must read "not speaking" before cutting
         "vad": True,                    # Silero VAD strips non-speech regions
         "no_speech_threshold": 0.6,     # segment no_speech_prob above this is suspect
         "min_avg_logprob": -1.0,        # segment avg_logprob below this is suspect

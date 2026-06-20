@@ -168,49 +168,47 @@ window.__vtr = (() => {
   };
 
   // ======== SSRC -> user map (native per-stream binding, the reliable path) ========
-  // Discord's RTC connection keeps a per-channel ssrc table. We expose every known audio/video
-  // ssrc with its owning userId and a kind tag so the capture side can bind a native receive
-  // stream straight to a user (no speaking-correlation guessing) and tell mic from screenshare.
+  // Discord exposes each connection's remote audio ssrcs as a plain { userId: ssrc } table on
+  // conn._connection.remoteAudioSSRCs. The "default" voice connection carries everyone's MIC; each
+  // watched Go Live opens a SEPARATE connection (StreamRTCConnectionStore, context "stream") whose
+  // remote audio ssrc is that streamer's SCREENSHARE audio. So the connection a ssrc arrives on
+  // deterministically tells mic ('voice') from screenshare ('stream') — no speaking-correlation
+  // guessing, no run-length heuristics, no per-build offset hunting.
   const looksSsrc = (n) => typeof n === "number" && n > 0 && n < 4294967296 && Number.isInteger(n);
-  const harvestConn = (conn, kind, out, audio) => {
-    if (!conn) return;
-    // Discord shapes seen in the wild: conn.ssrcMap is a Map; entries are either
-    //   userId -> { audioSSRC, videoSSRC, rtxSSRC }   (key = userId)
-    //   ssrc   -> userId / { userId }                  (key = ssrc)
-    const m = conn.ssrcMap || conn._ssrcMap || conn.userSsrcMap || null;
-    const eachEntry = (k, v) => {
-      if (v && typeof v === "object" && (looksSsrc(v.audioSSRC) || looksSsrc(v.videoSSRC))) {
-        const uid = String(v.userId != null ? v.userId : k);
-        if (looksSsrc(v.audioSSRC)) { out[v.audioSSRC] = { userId: uid, kind: kind }; audio.push(v.audioSSRC); }
-        if (looksSsrc(v.videoSSRC)) out[v.videoSSRC] = { userId: uid, kind: "video" };
-      } else if (looksSsrc(Number(k))) {
-        const uid = String(v && v.userId != null ? v.userId : v);
-        if (uid && uid !== "undefined") { out[Number(k)] = { userId: uid, kind: kind }; audio.push(Number(k)); }
-      }
-    };
+  const harvestRemote = (conn, kind, out, audio) => {
+    if (!conn || !conn._connection) return;
+    const m = conn._connection.remoteAudioSSRCs;            // { userId(str): ssrc(num), 0 = none }
+    if (!m || typeof m !== "object") return;
     try {
-      if (m && typeof m.forEach === "function") m.forEach((v, k) => eachEntry(k, v));
-      else if (m) for (const k in m) eachEntry(k, m[k]);
+      for (const uid in m) {
+        const ssrc = m[uid];
+        if (looksSsrc(ssrc) && uid && uid !== "undefined") { out[ssrc] = { userId: String(uid), kind: kind }; audio.push(ssrc); }
+      }
     } catch (e) {}
   };
   const wpSsrcMap = () => {
     const s = stores(); if (!s.RCS) return null;
     try {
       const out = {}, audio = [];
-      // the main voice connection (mic audio of everyone in the channel)
-      let conn = null;
-      try { conn = s.RCS.getRTCConnection && s.RCS.getRTCConnection(); } catch (e) {}
-      harvestConn(conn, "voice", out, audio);
-      // any stream (Go Live) connections expose screenshare audio under the streamer's id
-      try {
-        const all = (s.RCS.getAllActiveRTCConnections && s.RCS.getAllActiveRTCConnections())
-          || (s.RCS.getAllRTCConnections && s.RCS.getAllRTCConnections()) || null;
-        if (all) {
-          const list = typeof all.forEach === "function" ? [] : Object.values(all);
-          if (typeof all.forEach === "function") all.forEach((c) => list.push(c));
-          for (const c of list) if (c && c !== conn) harvestConn(c, "stream", out, audio);
-        }
-      } catch (e) {}
+      // mic audio of everyone in the channel (the default voice connection)
+      let voice = null;
+      try { voice = s.RCS.getRTCConnection && s.RCS.getRTCConnection(); } catch (e) {}
+      harvestRemote(voice, "voice", out, audio);
+      // screenshare audio of every watched Go Live (one connection per stream); harvested after
+      // voice so a streamer's screenshare ssrc wins as 'stream' on the off chance of a collision.
+      const SRCS = getStore("StreamRTCConnectionStore");
+      if (SRCS) {
+        const seen = [];
+        const add = (cn) => { if (cn && seen.indexOf(cn) < 0) { seen.push(cn); harvestRemote(cn, "stream", out, audio); } };
+        try {
+          const cs = SRCS.getRTCConnections && SRCS.getRTCConnections();
+          if (cs) { if (typeof cs.forEach === "function") cs.forEach(add); else Object.values(cs).forEach(add); }
+        } catch (e) {}
+        try {
+          const keys = SRCS.getAllActiveStreamKeys && SRCS.getAllActiveStreamKeys();
+          if (keys) for (const k of keys) { try { add(SRCS.getRTCConnection(k)); } catch (e) {} }
+        } catch (e) {}
+      }
       return { map: out, audio: audio };
     } catch (e) { return null; }
   };
