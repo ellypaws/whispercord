@@ -1,9 +1,9 @@
 name: build-native
 
-# Build the WinUI 3 (unpackaged, self-contained) native UI.
-# - push to main / PR touching native-ui: compile check + upload zip artifact
-# - manual run: upload zip artifact
-# - push a tag like native-v1.0.0: publish a GitHub Release with the zip attached
+# Build the WinUI 3 (unpackaged, self-contained) native UI as a single .exe.
+# - push to main / PR touching native-ui: compile check + upload exe artifact
+# - manual run: upload exe artifact
+# - push a tag like v1.0.0: publish a GitHub Release with the single exe attached
 on:
   push:
     branches: [main]
@@ -26,27 +26,29 @@ jobs:
         with:
           dotnet-version: "10.0.x"
 
-      - name: Publish (self-contained, unpackaged)
+      - name: Publish (self-contained single exe)
         run: >
           dotnet publish native-ui/DiscordTranscriber.Native.csproj
           -c Release -r win-x64 --self-contained true
           -p:WindowsAppSDKSelfContained=true -p:WindowsPackageType=None
+          -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:EnableCompressionInSingleFile=true -p:DebugType=none
+          -o native-ui/bin/sf
 
-      - name: Package zip
+      - name: Name the exe
         id: pack
         shell: pwsh
         run: |
           $ver = if ($env:GITHUB_REF -like 'refs/tags/*') { ($env:GITHUB_REF -replace 'refs/tags/','') -replace '^v','' } else { $env:GITHUB_SHA.Substring(0,7) }
-          $pub = "native-ui/bin/Release/net10.0-windows10.0.19041.0/win-x64/publish"
-          $name = "whispercord-native-$ver-win-x64.zip"
-          Compress-Archive -Path "$pub/*" -DestinationPath $name -CompressionLevel Optimal
+          $name = "whispercord-native-$ver-win-x64.exe"
+          Copy-Item native-ui/bin/sf/DiscordTranscriber.Native.exe $name
           "asset=$name" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "{0:N1} MB" -f ((Get-Item $name).Length / 1MB) | Write-Host
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: DiscordTranscriber-Native
+          name: whispercord-native
           path: ${{ steps.pack.outputs.asset }}
 
       - name: Publish release (v* tags)
