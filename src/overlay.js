@@ -170,7 +170,7 @@
     const av = document.createElement("img"); av.className = "vtl-av"; if (avatar) av.src = avatar;
     const c = document.createElement("div"); c.className = "vtl-c";
     const t = document.createElement("span"); t.className = "vtl-t"; t.textContent = new Date(ts).toLocaleTimeString([], { hour12: false });
-    const n = document.createElement("span"); n.className = "vtl-n"; n.textContent = (name || "unknown") + ":"; n.style.color = colorFor(uid);
+    const n = document.createElement("span"); n.className = "vtl-n"; n.textContent = (kw ? "🔔 " : "") + (name || "unknown") + ":"; n.style.color = colorFor(uid);
     const b = document.createElement("span"); setText(b, text, kw);
     c.append(t, n, b); row.append(av, c); logBody.appendChild(row);
     while (logBody.children.length > LOG_MAX) logBody.removeChild(logBody.firstChild);
