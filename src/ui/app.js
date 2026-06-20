@@ -39,6 +39,7 @@ const LU = {
   "info": '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
   "rotate-cw": '<path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/>',
   "arrow-up-down": '<path d="m21 16-4 4-4-4"/><path d="M17 20V4"/><path d="m3 8 4-4 4 4"/><path d="M7 4v16"/>',
+  "download": '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/>',
 };
 function icon(name, cls) {
   return '<svg class="lu ' + (cls || "") + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + (LU[name] || "") + "</svg>";
@@ -327,6 +328,24 @@ $("restartbtn").addEventListener("click", () => restartEngine($("restartbtn")));
 $("restartbar-btn").addEventListener("click", () => restartEngine($("restartbar-btn")));
 // live highlight color: update the transcript <mark> color without a restart
 $("a_highlight").addEventListener("input", () => document.documentElement.style.setProperty("--alert", $("a_highlight").value));
+
+// ---------- update check ----------
+// Checks GitHub for a newer release on every launch. "Ignore" only hides the bar for this
+// session (no persistence), so the next relaunch re-checks and re-prompts if still behind.
+async function checkUpdate() {
+  if (!API) return;
+  let u;
+  try { u = await API.check_update(); } catch (e) { return; }
+  if (!u || !u.available) return;
+  $("updatebar-text").textContent = `Update available: v${u.latest} (you have v${u.current}).`;
+  $("updatebar").dataset.url = u.url || "";
+  $("updatebar").style.display = "flex";
+}
+$("updatebar-btn").addEventListener("click", () => {
+  const url = $("updatebar").dataset.url;
+  if (url) API.open_url(url);
+});
+$("updatebar-ignore").addEventListener("click", () => { $("updatebar").style.display = "none"; });
 
 // ---------- clients ----------
 let clientList = [];
@@ -639,7 +658,9 @@ async function boot() {
   attachHelp();
   $("restartbtn").innerHTML = icon("rotate-cw") + "Restart engine to apply";
   $("restartbar-btn").innerHTML = icon("rotate-cw") + "Restart engine";
+  $("updatebar-btn").innerHTML = icon("download") + "Update";
   setInterval(refreshEngine, 3000);
+  checkUpdate();
 }
 
 // ---------- downloaded models ----------

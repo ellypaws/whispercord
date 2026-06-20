@@ -200,6 +200,40 @@ class Api:
         except Exception:
             return False
 
+    def app_version(self):
+        from version import __version__
+        return __version__
+
+    def check_update(self):
+        """Query GitHub for the latest release and report whether it's newer than us.
+        Network failures degrade quietly to "no update" so an offline launch is unaffected."""
+        import urllib.request
+        from version import __version__, GITHUB_REPO, is_newer
+        info = {"available": False, "current": __version__, "latest": __version__, "url": ""}
+        try:
+            req = urllib.request.Request(
+                "https://api.github.com/repos/%s/releases/latest" % GITHUB_REPO,
+                headers={"Accept": "application/vnd.github+json", "User-Agent": "whispercord"})
+            with urllib.request.urlopen(req, timeout=6) as r:
+                data = json.load(r)
+            tag = (data.get("tag_name") or "").strip()
+            if tag:
+                info["latest"] = tag.lstrip("vV")
+                info["url"] = data.get("html_url") or ""
+                info["available"] = is_newer(tag, __version__)
+        except Exception as e:
+            self.engine.log.append("[ui] update check failed: %s" % e)
+        return info
+
+    def open_url(self, url):
+        try:
+            import webbrowser
+            webbrowser.open(str(url))
+            return True
+        except Exception as e:
+            self.engine.log.append("[ui] open_url failed: %s" % e)
+            return False
+
     def list_models(self):
         try:
             import models

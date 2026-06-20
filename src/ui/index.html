@@ -139,6 +139,11 @@
                 border-bottom:1px solid var(--warn); padding:8px 14px; flex:0 0 auto; font-size:12px; color:var(--txt); }
   .restartbar .grow { flex:1; }
   .restartbar button { padding:5px 12px; }
+  /* update-available bar */
+  .updatebar { display:flex; align-items:center; gap:10px; background:rgba(88,101,242,.14);
+               border-bottom:1px solid var(--accent); padding:8px 14px; flex:0 0 auto; font-size:12px; color:var(--txt); }
+  .updatebar .grow { flex:1; }
+  .updatebar button { padding:5px 12px; }
   .lu { width:15px; height:15px; vertical-align:-3px; flex:0 0 auto; }
   button .lu { vertical-align:-3px; margin-right:4px; }
   /* circled (i) help + markdown popover */
@@ -184,6 +189,13 @@
     <span id="fr-pct" class="fr-pct"></span>
   </div>
   <div class="fr-track"><div id="fr-bar" class="fr-fill"></div></div>
+</div>
+
+<div id="updatebar" class="updatebar" style="display:none">
+  <span id="updatebar-text">A new version is available.</span>
+  <span class="grow"></span>
+  <button id="updatebar-btn">Update</button>
+  <button id="updatebar-ignore" class="sec">Ignore</button>
 </div>
 
 <div id="restartbar" class="restartbar" style="display:none">
