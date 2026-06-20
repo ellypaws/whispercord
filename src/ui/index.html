@@ -70,7 +70,6 @@
   .tcol-h .cdot { width:8px; height:8px; border-radius:50%; background:var(--accent); }
   .tcol-h .cnt { margin-left:auto; color:var(--mut); font-weight:400; font-size:11px; }
   .tcol-h .cspk { color:var(--good); font-weight:400; font-size:11px; }
-  .tcol-h .cspk:not(:empty)::before { content:"🔊 "; }
   .tcol-body { padding:10px; overflow-y:auto; flex:1; min-height:0; display:flex; flex-direction:column; gap:8px; }
   .tline .ts { color:var(--mut); font-size:11px; font-variant-numeric:tabular-nums; margin-right:6px; }
   .tline { content-visibility:auto; contain-intrinsic-size:0 40px; }   /* native windowing for huge logs */
@@ -125,7 +124,7 @@
 </head>
 <body>
 <header>
-  <h1>🎙 Discord Live Transcriber</h1>
+  <h1>Discord Live Transcriber</h1>
   <span class="pill"><span id="bdot" class="dot"></span><span id="bstat">stopped</span></span>
   <span class="pill"><span id="rdot" class="dot"></span><span id="rstat">relay</span></span>
   <span class="pill" id="activepill" title="active audio streams">0 streams</span>

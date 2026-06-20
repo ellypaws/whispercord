@@ -48,26 +48,27 @@ time. You can read it in the desktop app or as subtitles right inside Discord.
 > Windows 10/11 with an **NVIDIA GPU** is recommended (CPU works, just slower). It runs against
 > the Discord clients you already have installed — stable, PTB, and Canary — at the same time.
 
-## ✨ Features
+## Features
 
 - **Per-user transcripts** — two people talking at once become two separate lines, each
   attributed to the right person with their name and avatar.
 - **Per-client panes** — a separate, independently-scrolling transcript for every Discord
-  client you run, with a live "🔊 N speaking" indicator per pane.
+  client you run, with a live "N speaking" indicator per pane.
 - **In-Discord subtitles** — an optional overlay shows captions at the bottom of Discord with a
   draggable, resizable log.
 - **Your own voice** — optionally transcribe your mic too, gated by Discord's own voice
   detection and mute state so it doesn't pick up room noise.
 - **Voice events** — join / leave / mute / deafen / stream-start are shown inline, greyed out.
-- **Keyword alerts** — highlight + beep when a word you care about (like your name) is spoken.
+- **Keyword alerts** — highlight and beep when a word you care about (like your name) is spoken.
 - **Smart silence gating** — a loudness gate, voice-activity detection, and a phrase blocklist
   suppress the classic "Thank you." line on near-silence.
 - **Local and private** — everything stays on `127.0.0.1`; no audio or text leaves your machine.
 
-## ⬇️ Download
+## Download
 
 > [!TIP]
-> Grab the latest Windows build, unzip it, and run **`DiscordTranscriber.exe`**.
+> Grab the latest **`DiscordTranscriber.exe`** from Releases and run it — it's a single file,
+> nothing to install.
 
 <p>
   <a href="https://github.com/ellypaws/whispercord/releases/latest">
@@ -78,7 +79,7 @@ time. You can read it in the desktop app or as subtitles right inside Discord.
 The GPU runtime and the Whisper model download themselves on first use, so the download stays
 small. CPU-only users can switch the device to `cpu` in **Advanced** settings.
 
-## 🚀 Quick start (from source)
+## Quick start (from source)
 
 ```bat
 setup.bat      :: one-time: creates .venv and installs dependencies
@@ -94,7 +95,7 @@ run.bat        :: launches the desktop app
 > A client already running *without* its debug port can't gain one without a restart — the
 > **Restart w/ port** button does this (it briefly closes that client's current call).
 
-## 🖥️ The app
+## The app
 
 - **Live** — one transcript pane **per Discord client**. Each pane auto-scrolls while pinned,
   pauses when you scroll away, and has a **Jump to latest** button. Newest-on-top is a toggle.
@@ -104,10 +105,11 @@ run.bat        :: launches the desktop app
 - **Console** — the engine's live log.
 - **Tray** — the window minimizes to a tray icon (Show / Hide / Quit).
 
-## ⚙️ Configuration (`config.json`)
+## Configuration (`config.json`)
 
-`config.json` lives next to the app and is created on first run; everything is editable from
-**Settings**, but here are the keys:
+`config.json` is created on first run in your user data folder
+(`%APPDATA%\whispercord` on Windows, `~/.local/share/whispercord` on Linux). Everything is
+editable from **Settings**, but here are the keys:
 
 | Key | Meaning |
 |---|---|
@@ -118,29 +120,25 @@ run.bat        :: launches the desktop app
 | `cdp_ports` | Debug ports used for name resolution: PTB 9223, Discord 9224, Canary 9225, Dev 9226. |
 | `gating.min_rms_dbfs` | Below this loudness, audio is skipped. Raise toward −45 to gate harder. |
 | `gating.vad` / `gating.drop_phrases` | Voice-activity detection and the silence-hallucination blocklist. |
-| `alerts.keywords` | Words that trigger a highlight + beep. |
+| `alerts.keywords` | Words that trigger a highlight and beep. |
 | `ui.newest_at_top` | Newest line at the top instead of the bottom. |
 | `self_transcribe.*` | Transcribe your own mic (with mute / voice-detection gating, per client). |
 
 > [!TIP]
 > Environment overrides: `WHISPER_MODEL`, `RELAY_PORT`, `CDP_PORTS`, `VT_INJECT_OVERLAY=0`.
 
-## 🛠️ Build it yourself
+## Build it yourself
 
 ```bat
-build.bat                     :: onedir  -> dist\DiscordTranscriber\DiscordTranscriber.exe
-set VT_ONEFILE=1 && build.bat  :: single .exe (slower first launch)
+build.bat                     :: onedir folder for local testing
+set VT_ONEFILE=1 && build.bat  :: single DiscordTranscriber.exe (what releases ship)
 ```
 
 The GPU runtime is **not** bundled — on first **Start** with `device=cuda` the app downloads
-cuBLAS/cuDNN once into a `cuda/` folder next to the exe, which keeps the build small. Pushing a
-`v*` tag runs the [build workflow](.github/workflows/release.yml) and publishes a release.
+cuBLAS/cuDNN once into your user data folder, which keeps the build small. Pushing a `v*` tag
+runs the [build workflow](.github/workflows/release.yml) and publishes a release with the exe.
 
-> [!NOTE]
-> **onedir vs onefile:** onedir (default) launches fast; onefile is a single file but
-> re-extracts on every launch.
-
-## 🧩 How it works
+## How it works
 
 | Stage | What happens |
 |---|---|
@@ -149,7 +147,7 @@ cuBLAS/cuDNN once into a `cuda/` folder next to the exe, which keeps the build s
 | **Identify** | A local connection to the Discord client resolves who is speaking and their display name + avatar, then matches each audio stream to a person — across multiple clients at once, tracked separately so they never cross over. |
 | **Display** | A local WebSocket feeds both the desktop app (one pane per client) and the in-Discord subtitle overlay. |
 
-## ❓ Troubleshooting
+## Troubleshooting
 
 > [!WARNING]
 > **Names show as `user 1a2b3`** — that client has no debug port open, or its call isn't on
@@ -163,6 +161,6 @@ cuBLAS/cuDNN once into a `cuda/` folder next to the exe, which keeps the build s
 - **Still seeing "Thank you." on silence** — raise `gating.min_rms_dbfs` (e.g. −45) and keep
   `gating.vad` on.
 
-## 🔒 Privacy
+## Privacy
 
 Everything runs locally over `127.0.0.1`. No audio or text is sent off your machine.

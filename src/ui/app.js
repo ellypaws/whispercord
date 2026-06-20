@@ -9,8 +9,6 @@ const CLIENT_LABELS = { "discordptb.exe": "Discord PTB", "discord.exe": "Discord
 const CLIENT_COLORS = { "discordptb.exe": "#3ba55d", "discord.exe": "#5865f2",
                         "discordcanary.exe": "#faa61a", "discorddevelopment.exe": "#eb459e" };
 const clientLabel = (c) => CLIENT_LABELS[(c || "").toLowerCase()] || (c || "Unknown");
-const EVENT_ICON = { joined: "➜", left: "⤶", muted: "🔇", unmuted: "🎙", deafened: "🔕",
-                     undeafened: "🔔", video_on: "📹", video_off: "📷", stream_on: "🔴", stream_off: "⬛" };
 const EVENT_LABEL = { joined: "joined the channel", left: "left the channel", muted: "muted",
                       unmuted: "unmuted", deafened: "deafened", undeafened: "undeafened",
                       video_on: "turned camera on", video_off: "turned camera off",
@@ -412,7 +410,7 @@ function renderEvent(m) {
   img.src = m.avatar || DEFAULT_AV; img.onerror = () => { img.style.visibility = "hidden"; };
   const txt = document.createElement("span"); txt.className = "etxt";
   const ts = (CFG && CFG.ui && CFG.ui.show_timestamps) ? '<span class="ts"></span> ' : "";
-  txt.innerHTML = ts + (EVENT_ICON[m.event] || "•") + " <b></b> " + escapeHtml(EVENT_LABEL[m.event] || m.event);
+  txt.innerHTML = ts + "<b></b> " + escapeHtml(EVENT_LABEL[m.event] || m.event);
   txt.querySelector("b").textContent = m.name || "someone";
   if (ts) txt.querySelector(".ts").textContent = fmtTs(m.ts || Date.now());
   line.appendChild(img); line.appendChild(txt);

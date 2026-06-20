@@ -1,11 +1,19 @@
-"""Path resolution that works both from source and from a frozen PyInstaller exe.
+"""Path resolution that works from source, from a onedir build, and from a single-file exe.
 
   resource(*p) -> bundled, read-only assets (overlay.js, ui/) — from _MEIPASS when frozen.
-  data(*p)     -> user-writable data (config.json, cache/) — next to the exe, or project root in dev.
+  data(*p)     -> user-writable data (config.json, cache/, cuda/).
+
+A single-file exe can't reliably write next to itself (it runs from a temp extraction, and may
+live in a read-only location), so frozen builds store data in a per-user directory:
+  Windows  %APPDATA%\\whispercord
+  macOS    ~/Library/Application Support/whispercord
+  Linux    $XDG_DATA_HOME/whispercord  (default ~/.local/share/whispercord)
+From source we keep everything in the project root for easy iteration.
 """
 import os, sys
 
 _FROZEN = getattr(sys, "frozen", False)
+_APP = "whispercord"
 
 
 def resource_dir():
@@ -14,10 +22,23 @@ def resource_dir():
     return os.path.dirname(os.path.abspath(__file__))           # .../src
 
 
+def _user_data_dir():
+    if sys.platform == "win32":
+        base = os.environ.get("APPDATA") or os.path.expanduser(r"~\AppData\Roaming")
+    elif sys.platform == "darwin":
+        base = os.path.expanduser("~/Library/Application Support")
+    else:  # linux / other unix
+        base = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+    return os.path.join(base, _APP)
+
+
 def data_dir():
-    if _FROZEN:
-        return os.path.dirname(sys.executable)                  # next to the .exe
-    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # project root
+    d = _user_data_dir() if _FROZEN else os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    try:
+        os.makedirs(d, exist_ok=True)
+    except Exception:
+        pass
+    return d
 
 
 def resource(*p):
