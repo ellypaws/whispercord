@@ -120,6 +120,17 @@
   .toast.show { opacity:1; transform:none; }
   .toast .tdot { width:8px; height:8px; border-radius:50%; background:var(--good); }
   .toast.saving .tdot { background:var(--warn); }
+  /* first-run download / loading banner */
+  .frbar { background:var(--panel2); border-bottom:1px solid var(--line); padding:9px 14px; flex:0 0 auto; }
+  .fr-row { display:flex; align-items:center; gap:10px; font-size:12px; color:var(--txt); }
+  .fr-spin { width:13px; height:13px; flex:0 0 auto; border:2px solid var(--line);
+             border-top-color:var(--accent); border-radius:50%; animation:fr-rot .8s linear infinite; }
+  @keyframes fr-rot { to { transform:rotate(360deg); } }
+  .fr-pct { margin-left:auto; color:var(--mut); font-variant-numeric:tabular-nums; }
+  .fr-track { height:5px; background:#1a1b1e; border-radius:999px; margin-top:7px; overflow:hidden; }
+  .fr-fill { height:100%; width:0; background:var(--accent); border-radius:999px; transition:width .3s; }
+  .fr-fill.indet { width:38%; animation:fr-slide 1.2s ease-in-out infinite; }
+  @keyframes fr-slide { 0% { margin-left:-38%; } 100% { margin-left:100%; } }
 </style>
 </head>
 <body>
@@ -132,6 +143,15 @@
   <button id="startbtn">Start</button>
   <button id="stopbtn" class="danger" disabled>Stop</button>
 </header>
+
+<div id="firstrun" class="frbar" style="display:none">
+  <div class="fr-row">
+    <span class="fr-spin"></span>
+    <span id="fr-label">Preparing…</span>
+    <span id="fr-pct" class="fr-pct"></span>
+  </div>
+  <div class="fr-track"><div id="fr-bar" class="fr-fill"></div></div>
+</div>
 
 <div class="tabs">
   <div class="tab active" data-v="live">Live</div>

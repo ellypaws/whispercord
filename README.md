@@ -77,7 +77,8 @@ time. You can read it in the desktop app or as subtitles right inside Discord.
 </p>
 
 The GPU runtime and the Whisper model download themselves on first use, so the download stays
-small. CPU-only users can switch the device to `cpu` in **Advanced** settings.
+small. The first **Start** shows a progress bar while these are fetched and the model loads, so
+nothing happens silently. CPU-only users can switch the device to `cpu` in **Advanced** settings.
 
 ## Quick start (from source)
 

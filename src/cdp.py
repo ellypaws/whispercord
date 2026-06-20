@@ -165,6 +165,54 @@ window.__vtr = (() => {
     } catch (e) { return null; }
   };
 
+  // ======== SSRC -> user map (native per-stream binding, the reliable path) ========
+  // Discord's RTC connection keeps a per-channel ssrc table. We expose every known audio/video
+  // ssrc with its owning userId and a kind tag so the capture side can bind a native receive
+  // stream straight to a user (no speaking-correlation guessing) and tell mic from screenshare.
+  const looksSsrc = (n) => typeof n === "number" && n > 0 && n < 4294967296 && Number.isInteger(n);
+  const harvestConn = (conn, kind, out, audio) => {
+    if (!conn) return;
+    // Discord shapes seen in the wild: conn.ssrcMap is a Map; entries are either
+    //   userId -> { audioSSRC, videoSSRC, rtxSSRC }   (key = userId)
+    //   ssrc   -> userId / { userId }                  (key = ssrc)
+    const m = conn.ssrcMap || conn._ssrcMap || conn.userSsrcMap || null;
+    const eachEntry = (k, v) => {
+      if (v && typeof v === "object" && (looksSsrc(v.audioSSRC) || looksSsrc(v.videoSSRC))) {
+        const uid = String(v.userId != null ? v.userId : k);
+        if (looksSsrc(v.audioSSRC)) { out[v.audioSSRC] = { userId: uid, kind: kind }; audio.push(v.audioSSRC); }
+        if (looksSsrc(v.videoSSRC)) out[v.videoSSRC] = { userId: uid, kind: "video" };
+      } else if (looksSsrc(Number(k))) {
+        const uid = String(v && v.userId != null ? v.userId : v);
+        if (uid && uid !== "undefined") { out[Number(k)] = { userId: uid, kind: kind }; audio.push(Number(k)); }
+      }
+    };
+    try {
+      if (m && typeof m.forEach === "function") m.forEach((v, k) => eachEntry(k, v));
+      else if (m) for (const k in m) eachEntry(k, m[k]);
+    } catch (e) {}
+  };
+  const wpSsrcMap = () => {
+    const s = stores(); if (!s.RCS) return null;
+    try {
+      const out = {}, audio = [];
+      // the main voice connection (mic audio of everyone in the channel)
+      let conn = null;
+      try { conn = s.RCS.getRTCConnection && s.RCS.getRTCConnection(); } catch (e) {}
+      harvestConn(conn, "voice", out, audio);
+      // any stream (Go Live) connections expose screenshare audio under the streamer's id
+      try {
+        const all = (s.RCS.getAllActiveRTCConnections && s.RCS.getAllActiveRTCConnections())
+          || (s.RCS.getAllRTCConnections && s.RCS.getAllRTCConnections()) || null;
+        if (all) {
+          const list = typeof all.forEach === "function" ? [] : Object.values(all);
+          if (typeof all.forEach === "function") all.forEach((c) => list.push(c));
+          for (const c of list) if (c && c !== conn) harvestConn(c, "stream", out, audio);
+        }
+      } catch (e) {}
+      return { map: out, audio: audio };
+    } catch (e) { return null; }
+  };
+
   // ======== FALLBACK: React fiber + DOM scrape of the voice panel ========
   const fiberOf = (el) => {
     for (const k in el) { if (k[0] === "_" && (k.indexOf("__reactFiber$") === 0 || k.indexOf("__reactInternalInstance$") === 0)) return el[k]; }
@@ -272,6 +320,7 @@ window.__vtr = (() => {
       return o;
     },
     self: () => wpSelf() || domSelf(),
+    ssrcMap: () => wpSsrcMap(),
     user: (uid) => {
       const w = wpUser(uid);
       if (w) return w;
@@ -294,3 +343,9 @@ def self_state(cdp):
 
 def voice_states(cdp):
     return cdp.evaluate(_BOOT + "window.__vtr.voiceStates()")
+
+def ssrc_map(cdp):
+    """{'map': {ssrc(str): {userId, kind}}, 'audio': [ssrc,...]} or None.
+    `kind` is 'voice' | 'video' | 'stream'. `audio` lists audio ssrcs for the
+    native offset auto-locator. Keys come back stringified from JSON."""
+    return cdp.evaluate(_BOOT + "window.__vtr.ssrcMap()")

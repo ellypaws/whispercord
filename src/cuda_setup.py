@@ -46,10 +46,10 @@ def _wheel_url(pkg):
     return cands[0]["url"], cands[0]["filename"]
 
 
-def _download(url, dest, log):
+def _download(url, dest, log, on_progress=None):
     with urllib.request.urlopen(url, timeout=60) as r:
         total = int(r.headers.get("Content-Length", 0))
-        got, last = 0, -1
+        got, last_log, last_pp = 0, -1, -1
         with open(dest, "wb") as f:
             while True:
                 b = r.read(1 << 20)
@@ -58,20 +58,32 @@ def _download(url, dest, log):
                 f.write(b); got += len(b)
                 if total:
                     pct = got * 100 // total
-                    if pct // 10 != last // 10:
-                        last = pct; log("[cuda]   %d%% (%d/%d MB)" % (pct, got >> 20, total >> 20))
+                    if pct != last_pp:
+                        last_pp = pct
+                        if on_progress:
+                            on_progress(got, total)
+                    if pct // 10 != last_log // 10:
+                        last_log = pct; log("[cuda]   %d%% (%d/%d MB)" % (pct, got >> 20, total >> 20))
 
 
-def ensure_cuda(log=print):
-    """Download + extract the CUDA DLLs if missing. Returns True when usable."""
+def ensure_cuda(log=print, on_progress=None):
+    """Download + extract the CUDA DLLs if missing. Returns True when usable.
+    on_progress(pct, label) is called during download for a first-run progress UI."""
     if cuda_present():
         return True
     dest = cuda_dir()
-    for pkg in PKGS:
+    n = len(PKGS)
+    for i, pkg in enumerate(PKGS):
         url, fn = _wheel_url(pkg)
+        label = "Downloading GPU runtime %d/%d (%s)" % (i + 1, n, pkg)
+        if on_progress:
+            on_progress(0, label)
         log("[cuda] downloading %s ..." % fn)
         tmp = os.path.join(tempfile.gettempdir(), fn)
-        _download(url, tmp, log)
+        _download(url, tmp, log,
+                  on_progress=(lambda got, total: on_progress(got * 100 // total, label)) if on_progress else None)
+        if on_progress:
+            on_progress(100, "Extracting GPU runtime %d/%d" % (i + 1, n))
         log("[cuda] extracting %s ..." % fn)
         with zipfile.ZipFile(tmp) as z:
             for n in z.namelist():

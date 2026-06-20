@@ -287,6 +287,7 @@ async function refreshEngine() {
 }
 $("startbtn").addEventListener("click", async () => {
   $("startbtn").disabled = true;
+  showProgress({ active: true, done: false, pct: null, label: "Starting engine…" });
   await API.start_backend();
   setTimeout(refreshEngine, 800);
   setTimeout(connectRelay, 1500);
@@ -296,6 +297,32 @@ $("stopbtn").addEventListener("click", async () => {
   await API.stop_backend();
   setTimeout(refreshEngine, 500);
 });
+
+// ---------- first-run download / loading banner ----------
+function showProgress(p) {
+  const bar = $("firstrun");
+  if (!bar) return;
+  if (!p || !p.active || p.done) { bar.style.display = "none"; return; }
+  bar.style.display = "block";
+  $("fr-label").textContent = p.label || "Preparing…";
+  const fill = $("fr-bar");
+  if (typeof p.pct === "number") {
+    fill.classList.remove("indet");
+    fill.style.marginLeft = "0";
+    fill.style.width = Math.max(0, Math.min(100, p.pct)) + "%";
+    $("fr-pct").textContent = p.pct + "%";
+  } else {
+    fill.classList.add("indet");
+    fill.style.width = "";
+    $("fr-pct").textContent = "";
+  }
+}
+async function pumpProgress() {
+  if (API) {
+    try { showProgress(await API.get_progress()); } catch (e) {}
+  }
+  setTimeout(pumpProgress, 600);
+}
 
 // ---------- console log ----------
 async function pumpLog() {
@@ -491,6 +518,7 @@ async function boot() {
   refreshGpu();
   connectRelay();
   pumpLog();
+  pumpProgress();
   setInterval(refreshEngine, 3000);
 }
 

@@ -16,6 +16,13 @@ DEFAULTS = {
     "interim_every_s": 1.0,
     "min_utt_s": 0.4,
     "max_utt_s": 12.0,
+    "capture": {                        # which audio stream kinds to transcribe
+        "voice": True,                  # users' microphone / voice audio
+        "screenshare": True,            # Go Live / screenshare audio (e.g. game, music, video)
+        "screenshare_label": " (stream)",   # suffix added to a streamer's name for their stream audio
+        "screenshare_detect_s": 18.0,   # heuristic fallback: a stream active this long without a
+                                        # silence gap is treated as screenshare (until native SSRC kind known)
+    },
     "overlay": {
         "subtitle_timeout_ms": 8000,
         "max_blocks": 6,

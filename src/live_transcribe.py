@@ -61,12 +61,31 @@ MIN_UTT_S = CFG["min_utt_s"]
 MAX_UTT_S = CFG["max_utt_s"]
 INTERIM_EVERY = CFG["interim_every_s"]  # re-transcribe a growing utterance this often (live partials)
 
+# --- audio-kind capture (mic/voice vs screenshare/Go-Live) ---
+CAP = CFG["capture"]
+CAP_VOICE = CAP.get("voice", True)
+CAP_SCREEN = CAP.get("screenshare", True)
+SCREEN_LABEL = CAP.get("screenshare_label", " (stream)")
+SCREEN_DETECT_S = CAP.get("screenshare_detect_s", 18.0)
+KEEPALIVE_S = 2.0                   # ping the overlay this often while a stream is still active
+
 # --- silence/hallucination gating (kills "Thank you." on quiet audio) ---
 GATE = CFG["gating"]
 GATE_DBFS = GATE["min_rms_dbfs"]
 USE_VAD = GATE["vad"]
 NO_SPEECH = GATE["no_speech_threshold"]
 MIN_LOGPROB = GATE["min_avg_logprob"]
+def emit_progress(stage, label, pct=None, done=False):
+    """Emit a structured first-run progress line the desktop wrapper parses to drive its
+    download/loading banner. Printed as a sentinel line so the GUI can keep it out of the
+    visible console; harmless plain text when run headless."""
+    try:
+        print("[[VTPROG]]" + json.dumps({"stage": stage, "label": label, "pct": pct, "done": done}),
+              flush=True)
+    except Exception:
+        pass
+
+
 def _norm(s):
     return s.lower().strip().strip(".!?,…\"' ").strip()
 DROP = set(_norm(p) for p in GATE["drop_phrases"])
@@ -78,11 +97,30 @@ announced = {}                                 # src -> bool (placeholder shown 
 interim_at = collections.defaultdict(float)    # src -> last interim transcribe time
 src2user = {}                                  # src -> {userId, name, avatar}
 src_client = {}                                # src -> client exe name (e.g. 'discordptb.exe')
+src_ssrc = {}                                  # src -> int ssrc read from the native ChannelReceive
+src_kind = {}                                  # src -> 'voice' | 'stream' (screenshare/Go Live audio)
+native_kind = set()                            # srcs whose kind came from the renderer ssrc map (authoritative)
+active_since = {}                              # src -> time the current uninterrupted active run began
+last_emit = collections.defaultdict(float)     # src -> last time we sent the overlay anything
 hooked_clients = set()                         # client exe names the Frida hook attached to
 cdp_clients = set()                            # client exe names with a live CDP connection
+client_scripts = {}                            # client exe name -> live Frida script (for set_ssrcs rpc)
 self_gate = {}                                 # client -> bool: capture my mic for this client right now
 corr = collections.defaultdict(dict)           # src -> {uid: co-occurrence score} for speaker binding
 lock = threading.Lock()
+
+
+def kind_of(src):
+    return src_kind.get(src, "voice")
+
+
+def kind_enabled(src):
+    return CAP_SCREEN if kind_of(src) == "stream" else CAP_VOICE
+
+
+def display_name(src, name):
+    base = name or ("user " + src[-5:])
+    return (base + SCREEN_LABEL) if kind_of(src) == "stream" else base
 
 SELF = CFG.get("self_transcribe", {})          # own-voice transcription options
 DEBUG_BIND = os.environ.get("VT_DEBUG_BIND") == "1"   # verbose speaker-binding correlation log
@@ -108,9 +146,26 @@ def save_user_cache():
 
 JS = r"""
 let MOD = null;
+let SSRC_OFF = -1;          // located offset of remote_ssrc_ inside ChannelReceive (auto-found)
+let WANT = null;           // {ssrc:1} set of valid audio ssrcs, used to locate SSRC_OFF
 function modpath() {
   MOD = Process.enumerateModules().find(m => /discord_voice/i.test(m.name)) || null;
   return MOD ? MOD.path : null;
+}
+function setSsrcs(arr) {    // renderer-supplied audio ssrcs; lets us pin remote_ssrc_'s offset
+  const w = {};
+  for (const x of arr) w[x >>> 0] = 1;
+  WANT = w;
+  return true;
+}
+function readSsrc(recv) {   // recv = ChannelReceive*; find remote_ssrc_ once, then read it cheaply
+  if (SSRC_OFF >= 0) { try { return recv.add(SSRC_OFF).readU32(); } catch (e) { return 0; } }
+  if (!WANT) return 0;
+  for (let o = 0; o < 0x400; o += 4) {
+    let v; try { v = recv.add(o).readU32(); } catch (e) { break; }
+    if (WANT[v >>> 0]) { SSRC_OFF = o; return v; }
+  }
+  return 0;
 }
 function install(rva) {
   if (!MOD) modpath();
@@ -128,13 +183,14 @@ function install(rva) {
       const buf = new ArrayBuffer(outN * 2);
       const view = new Int16Array(buf);
       for (let i = 0; i < outN; i++) view[i] = base.add(i * 3 * ch * 2).readS16();  // L channel
-      send({ src: PID + ':' + this.src.toString(), client: CLIENT }, buf);  // tag by client (multi-client safe)
+      // tag by client (multi-client safe) and by ssrc (native per-stream identity)
+      send({ src: PID + ':' + this.src.toString(), client: CLIENT, ssrc: readSsrc(this.src) }, buf);
     }
   });
   send({ ready: true, pid: PID, client: CLIENT });
   return true;
 }
-rpc.exports = { modpath: modpath, install: install };
+rpc.exports = { modpath: modpath, install: install, setSsrcs: setSsrcs };
 """
 
 def on_message(msg, data):
@@ -145,11 +201,16 @@ def on_message(msg, data):
         print("[capture] hook installed (pid %s)" % p.get("pid")); return
     src = p.get("src")
     if src and data:
+        now = time.time()
         with lock:
+            if now - last_frame.get(src, 0) >= SILENCE_S or src not in active_since:
+                active_since[src] = now            # start of a fresh uninterrupted active run
             buffers[src].extend(data)
-            last_frame[src] = time.time()
+            last_frame[src] = now
             if p.get("client"):
                 src_client[src] = p["client"]
+            if p.get("ssrc"):
+                src_ssrc[src] = p["ssrc"]
 
 def attach_hook():
     """Attach to EVERY Discord-family process (Discord/PTB/Canary/Dev) that has
@@ -172,6 +233,7 @@ def attach_hook():
             if sc.exports_sync.install(rva):
                 print("[capture] %s PID %d  RVA 0x%x" % (pr.name, pr.pid, rva))
                 sessions.append((s, sc)); seen.add(pr.name); hooked_clients.add(pr.name.lower())
+                client_scripts[pr.name.lower()] = sc   # mapping_thread pushes ssrcs here
             else:
                 s.detach()
         except Exception:
@@ -299,7 +361,7 @@ def _client_from_url(url):
 
 
 def mapping_thread():
-    from cdp import CDP, speaking_users, user_info, self_state, voice_states
+    from cdp import CDP, speaking_users, user_info, self_state, voice_states, ssrc_map
     from launch import CLIENTS
     port2client = {port: exe.lower() for _, (exe, port) in CLIENTS.items()}  # 9223 -> 'discordptb.exe'
 
@@ -345,8 +407,9 @@ def mapping_thread():
         info = resolve_user(c, uid)
         if info:
             src2user[s] = info
-            print("[map] %s [%s] -> %s" % (s[-6:], client, info["name"]))
-            broadcast({"type": "rename", "userId": s, "name": info["name"],
+            nm = display_name(s, info["name"])
+            print("[map] %s [%s] -> %s" % (s[-6:], client, nm))
+            broadcast({"type": "rename", "userId": s, "name": nm,
                        "avatar": info["avatar"], "client": client})
 
     def emit_event(kind, uid, client, c):
@@ -460,11 +523,61 @@ def mapping_thread():
                     diff_voice(client, c, st0["vs_prev"], cur_vs)
                     st0["vs_prev"] = cur_vs
 
+            # --- native per-stream binding via ssrc (the reliable path) ---
+            # Pull this client's ssrc->user table ~1x/sec and feed the audio ssrcs back to the
+            # Frida hook so it can pin remote_ssrc_'s offset and tag every frame with its ssrc.
+            if client and now - st0.get("ssrc_t", 0) > 1.0:
+                st0["ssrc_t"] = now
+                try:
+                    sm = ssrc_map(c)
+                except Exception:
+                    sm = None
+                if sm and sm.get("map"):
+                    st0["ssrc2user"] = sm["map"]
+                    sk = client_scripts.get(client)
+                    if sk and sm.get("audio"):
+                        try:
+                            sk.exports_sync.set_ssrcs([int(x) for x in sm["audio"]])
+                        except Exception:
+                            pass
+            ssrc2user = st0.get("ssrc2user") or {}
+            streamers = [uid for uid, v in (st0.get("vs_prev") or {}).items() if v.get("stream")]
+
             with lock:
                 active = [s for s, t in last_frame.items()
                           if now - t < 0.4 and src_client.get(s) == client]
-            if not client or not speaking or not active:   # never bind without a known client
+                run_len = {s: now - active_since.get(s, now) for s in active}
+                ssrcs = {s: src_ssrc.get(s) for s in active}
+
+            # (1) ssrc -> {userId, kind}: bind the stream straight to its owner, no guessing,
+            #     and classify mic ('voice') vs screenshare ('stream') from the renderer.
+            for s in active:
+                ent = ssrc2user.get(str(ssrcs.get(s) or ""))
+                if ent and ent.get("userId"):
+                    src_kind[s] = "stream" if ent.get("kind") == "stream" else "voice"
+                    native_kind.add(s)
+                    bind(s, ent["userId"], client, c)
+            # (2) heuristic fallback (until the ssrc offset is pinned): a stream that stays active
+            #     continuously past the threshold, while someone in the channel is screensharing,
+            #     is screenshare audio rather than speech. A stream with normal speech gaps self-heals
+            #     back to 'voice'. Native classification (1) always wins.
+            for s in active:
+                if s in native_kind:
+                    continue
+                if streamers and run_len.get(s, 0) >= SCREEN_DETECT_S:
+                    if kind_of(s) != "stream":
+                        src_kind[s] = "stream"
+                        if len(streamers) == 1:        # unambiguous owner
+                            bind(s, streamers[0], client, c)
+                elif kind_of(s) == "stream":
+                    src_kind[s] = "voice"              # heuristic misfire heals after a pause
+
+            # screenshare streams are excluded from speaker correlation (they have no speaking
+            # user, so they would otherwise latch onto whoever happens to be talking).
+            vactive = [s for s in active if kind_of(s) != "stream"]
+            if not client or not speaking or not vactive:  # never bind without a known client
                 continue
+            active = vactive
             # Correlate (active stream) with (speaking user) using positive AND negative evidence:
             #  + a stream active while a user speaks is evidence they own it (extra when it's a
             #    clean 1-speaker/1-stream moment),
@@ -525,13 +638,18 @@ def main():
             from cuda_setup import ensure_cuda, cuda_present
             if not cuda_present():
                 print("[cuda] GPU runtime not found - downloading (~1 GB, first run only)...")
-                ensure_cuda(print)
+                emit_progress("cuda", "Downloading GPU runtime (first run, ~1 GB)", 0)
+                ensure_cuda(print, on_progress=lambda pct, label: emit_progress("cuda", label, pct))
             add_cuda_dlls()
         except Exception as e:
             print("[cuda] setup failed (%s) - GPU may not load" % e)
     print("[whisper] loading '%s' on %s (%s)..." % (MODEL, DEVICE, COMPUTE))
+    # pct=None -> indeterminate bar; the HF download has no easy progress hook, and a cached
+    # model just loads, so this covers "downloading on first run" and "loading" with one banner.
+    emit_progress("model", "Loading speech model '%s' (downloads on first run)" % MODEL)
     model = WhisperModel(MODEL, device=DEVICE, compute_type=COMPUTE)
     print("[whisper] ready (lang=%s, beam=%d)" % (LANGUAGE or "auto", BEAM))
+    emit_progress("ready", "Engine ready", 100, done=True)
 
     threading.Thread(target=start_relay, daemon=True).start()
     threading.Thread(target=mapping_thread, daemon=True).start()
@@ -570,11 +688,18 @@ def main():
 
     def emit(src, text, final):
         u = src2user.get(src)
-        name = u["name"] if u else ("user " + src[-5:])
+        name = display_name(src, u["name"] if u else None)
         avatar = u["avatar"] if u else None
+        last_emit[src] = time.time()
         broadcast({"type": "transcript", "userId": src, "name": name, "avatar": avatar,
                    "text": text, "isFinal": final, "client": src_client.get(src),
-                   "ts": int(time.time() * 1000)})
+                   "kind": kind_of(src), "ts": int(time.time() * 1000)})
+
+    def keepalive(src):
+        # tell the overlay this speaker is still active even when a chunk transcribed to nothing,
+        # so a long utterance doesn't fade at the subtitle timeout mid-sentence.
+        last_emit[src] = time.time()
+        broadcast({"type": "keepalive", "userId": src, "client": src_client.get(src)})
 
     def heartbeat():
         while True:
@@ -605,8 +730,12 @@ def main():
         time.sleep(0.2)
         now = time.time()
         jobs = []  # (src, bytes|None, kind)
+        keepalives = []
         with lock:
             for src, b in list(buffers.items()):
+                if not kind_enabled(src):                      # this kind (voice/screenshare) is toggled off
+                    buffers[src] = bytearray(); announced.pop(src, None); interim_at.pop(src, None)
+                    continue
                 dur = len(b) / 2 / 16000.0
                 silent = now - last_frame[src] >= SILENCE_S
                 if silent:
@@ -614,15 +743,19 @@ def main():
                         jobs.append((src, bytes(b), "final"))
                     buffers[src] = bytearray(); announced.pop(src, None); interim_at.pop(src, None)
                 else:
+                    job_added = False
                     if not announced.get(src):
                         announced[src] = True
-                        jobs.append((src, None, "start"))        # instant "speaking…" feedback
+                        jobs.append((src, None, "start")); job_added = True   # instant "speaking…" feedback
                     if dur >= MAX_UTT_S:
-                        jobs.append((src, bytes(b), "final"))     # cap runaway utterances
+                        jobs.append((src, bytes(b), "final")); job_added = True   # cap runaway utterances
                         buffers[src] = bytearray(); announced.pop(src, None); interim_at.pop(src, None)
                     elif dur >= MIN_UTT_S and now - interim_at[src] >= INTERIM_EVERY:
                         interim_at[src] = now
-                        jobs.append((src, bytes(b), "interim"))   # live partial
+                        jobs.append((src, bytes(b), "interim")); job_added = True   # live partial
+                    # still receiving audio but produced no text this tick -> keep the subtitle alive
+                    if not job_added and announced.get(src) and now - last_emit.get(src, 0) >= KEEPALIVE_S:
+                        keepalives.append(src)
         for src, b, kind in jobs:
             if kind == "start":
                 emit(src, "", False)
@@ -633,8 +766,10 @@ def main():
             elif kind == "final":
                 t = transcribe(b)
                 if t:
-                    name = (src2user.get(src) or {}).get("name", "user " + src[-5:])
-                    print("  [%s] %s" % (name, t)); emit(src, t, True)
+                    print("  [%s] %s" % (display_name(src, (src2user.get(src) or {}).get("name")), t))
+                    emit(src, t, True)
+        for src in keepalives:
+            keepalive(src)
 
 if __name__ == "__main__":
     main()

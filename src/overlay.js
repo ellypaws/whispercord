@@ -207,8 +207,21 @@
 
   function handle(m) {
     if (!m) return;
-    if (m.type === "status") { lastStatus = Date.now(); const n = m.active || 0; setStatus("", n > 0 ? "Listening · " + n + " speaking" : "Listening"); return; }
+    if (m.type === "status") {
+      lastStatus = Date.now();
+      // scope the "n speaking" count to THIS overlay's own client, not the global total
+      let n = m.active || 0;
+      if (CLIENT && m.clients && m.clients[CLIENT]) n = m.clients[CLIENT].active || 0;
+      setStatus("", n > 0 ? "Listening · " + n + " speaking" : "Listening");
+      return;
+    }
     if (CLIENT && m.client && m.client !== CLIENT) return;   // ignore other clients' calls
+    if (m.type === "keepalive") {
+      // the speaker is still talking even if this chunk had no words; keep the subtitle alive
+      const b = blocks.get(m.userId);
+      if (b) { if (b.timeout) clearTimeout(b.timeout); b.timeout = setTimeout(() => removeBlk(m.userId), LIVE_MS); }
+      return;
+    }
     if (m.type === "rename") {
       const esc = (window.CSS && CSS.escape) ? CSS.escape(m.userId) : m.userId;
       document.querySelectorAll('.vtl[data-uid="' + esc + '"]').forEach((r) => {

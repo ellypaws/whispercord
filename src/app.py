@@ -29,14 +29,22 @@ def run_backend():
 
 
 # ----------------------------------------------------------------------------- engine control
+PROG_TAG = "[[VTPROG]]"
+PROG_IDLE = {"stage": "idle", "label": "", "pct": None, "done": True, "active": False}
+
+
 class Engine:
     def __init__(self):
         self.proc = None
         self.log = collections.deque(maxlen=600)
+        self.progress = dict(PROG_IDLE)
 
     def start(self):
         if self.proc and self.proc.poll() is None:
             return True
+        # show the banner immediately; the backend refines it as soon as it reports
+        self.progress = {"stage": "starting", "label": "Starting engine…", "pct": None,
+                         "done": False, "active": True}
         args = [sys.executable]
         if not getattr(sys, "frozen", False):
             args.append(os.path.join(paths.resource_dir(), "app.py"))
@@ -57,9 +65,19 @@ class Engine:
     def _pump(self):
         try:
             for line in self.proc.stdout:
-                self.log.append(line.rstrip("\n"))
+                line = line.rstrip("\n")
+                if line.startswith(PROG_TAG):
+                    try:
+                        p = json.loads(line[len(PROG_TAG):])
+                        p["active"] = not p.get("done")
+                        self.progress = p
+                    except Exception:
+                        pass
+                    continue
+                self.log.append(line)
         except Exception:
             pass
+        self.progress = dict(PROG_IDLE)   # stream closed -> engine exited; clear the banner
 
     def stop(self):
         if self.proc and self.proc.poll() is None:
@@ -72,6 +90,7 @@ class Engine:
             except Exception:
                 pass
         self.proc = None
+        self.progress = dict(PROG_IDLE)
         return True
 
     def running(self):
@@ -137,6 +156,9 @@ class Api:
 
     def get_log(self):
         return "\n".join(self.engine.log)
+
+    def get_progress(self):
+        return self.engine.progress
 
     def cuda_status(self):
         try:
