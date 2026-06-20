@@ -44,7 +44,7 @@ class Engine:
         env = os.environ.copy()
         env["PYTHONUTF8"] = "1"
         env["PYTHONUNBUFFERED"] = "1"
-        env["VT_INJECT_OVERLAY"] = "1"   # master on; per-client overlay gating is in the engine config
+        env.setdefault("VT_INJECT_OVERLAY", "1")   # on by default; honour VT_INJECT_OVERLAY=0 to disable all overlays
         self.log.clear()
         self.proc = subprocess.Popen(
             args, cwd=paths.resource_dir(), env=env,

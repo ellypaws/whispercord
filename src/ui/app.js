@@ -314,12 +314,19 @@ async function pumpLog() {
 // ---------- relay (transcript) ----------
 function connectRelay() {
   const port = (CFG && CFG.relay_port) || 8765;
-  try { if (relay) relay.close(); } catch (e) {}
-  relay = new WebSocket("ws://127.0.0.1:" + port);
-  relay.onopen = () => { $("rdot").className = "dot on"; $("rstat").textContent = "relay"; };
-  relay.onclose = () => { $("rdot").className = "dot off"; $("rstat").textContent = "relay off";
-                          setTimeout(connectRelay, 2000); };
-  relay.onmessage = (ev) => {
+  // Detach the old socket's handlers before closing it, otherwise its onclose would schedule
+  // yet another reconnect and keep racing the socket we're about to open.
+  try { if (relay) { relay.onclose = null; relay.onmessage = null; relay.close(); } } catch (e) {}
+  const sock = new WebSocket("ws://127.0.0.1:" + port);
+  relay = sock;
+  sock.onopen = () => { if (relay !== sock) return; $("rdot").className = "dot on"; $("rstat").textContent = "relay"; };
+  sock.onclose = () => {
+    if (relay !== sock) return;                 // superseded by a newer socket — don't reconnect
+    $("rdot").className = "dot off"; $("rstat").textContent = "relay off";
+    setTimeout(connectRelay, 2000);
+  };
+  sock.onmessage = (ev) => {
+    if (relay !== sock) return;
     let m; try { m = JSON.parse(ev.data); } catch (e) { return; }
     if (m.type === "status") {
       $("activepill").textContent = (m.active || 0) + " stream" + (m.active === 1 ? "" : "s");
@@ -383,12 +390,13 @@ function pinScroll(p) { if (p.pinned) { p.lastAuto = Date.now(); p.body.scrollTo
 function capLines(p) {                       // drop the OLDEST rows (opposite end from newest)
   while (p.body.children.length > 200) p.body.removeChild(newestTop() ? p.body.lastChild : p.body.firstChild);
 }
-// per-client live "N speaking" badge (active audio streams for that client, from the heartbeat)
+// per-client live "N speaking" badge — each pane shows ONLY its own client's active streams
+// (iterate panels, not the heartbeat, so a client that goes quiet/absent clears its own badge)
 function updateSpeaking(clients) {
-  for (const exe in clients) {
-    const p = panels[exe];
+  for (const key in panels) {
+    const p = panels[key];
     if (!p || !p.spk) continue;
-    const a = clients[exe].active || 0;
+    const a = (clients[key] && clients[key].active) || 0;
     p.spk.textContent = a ? a + " speaking" : "";
   }
 }

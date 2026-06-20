@@ -86,6 +86,7 @@ lock = threading.Lock()
 
 SELF = CFG.get("self_transcribe", {})          # own-voice transcription options
 DEBUG_BIND = os.environ.get("VT_DEBUG_BIND") == "1"   # verbose speaker-binding correlation log
+DEBUG_EVENTS = os.environ.get("VT_DEBUG_EVENTS") == "1"   # verbose voice-event diffing log
 
 # persistent cache of resolved users (userId -> {userId,name,avatar}) so names survive restarts
 user_cache = {}
@@ -284,6 +285,19 @@ def self_enabled_for(client):
     return (SELF.get("clients") or {}).get(client, True)
 
 
+def _client_from_url(url):
+    """Map a renderer URL to its client exe, so custom CDP ports still isolate per client.
+    Check PTB/Canary before stable, since their hosts contain 'discord.com' as a substring."""
+    u = (url or "").lower()
+    if "ptb.discord.com" in u:
+        return "discordptb.exe"
+    if "canary.discord.com" in u:
+        return "discordcanary.exe"
+    if "discord.com" in u:
+        return "discord.exe"
+    return None
+
+
 def mapping_thread():
     from cdp import CDP, speaking_users, user_info, self_state, voice_states
     from launch import CLIENTS
@@ -302,7 +316,7 @@ def mapping_thread():
                 c = CDP(port)
             except Exception:
                 continue
-            client = port2client.get(port)
+            client = port2client.get(port) or _client_from_url(getattr(c, "url", None))
             conns[port] = {"client": client, "cdp": c, "fails": 0}
             if client:
                 cdp_clients.add(client)
@@ -337,6 +351,8 @@ def mapping_thread():
 
     def emit_event(kind, uid, client, c):
         info = resolve_user(c, uid) or {"name": "user " + uid[-4:], "avatar": None}
+        if DEBUG_EVENTS:
+            print("[event] %s: %s (%s)" % (kind, info.get("name"), client))
         broadcast({"type": "event", "event": kind, "client": client, "userId": uid,
                    "name": info.get("name"), "avatar": info.get("avatar"),
                    "ts": int(time.time() * 1000)})
@@ -401,7 +417,8 @@ def mapping_thread():
                     ok_mute = (not SELF.get("only_when_unmuted", True)) or (not sst.get("muted"))
                     ok_speak = (not SELF.get("require_discord_speaking", True)) or sst.get("speaking")
                     open_ = bool(ok_mute and ok_speak)
-                self_gate[client] = open_
+                with lock:
+                    self_gate[client] = open_
                 key = "self:" + client
                 if open_ and key not in src2user and sst:
                     info = user_cache.get(sst["selfId"])
@@ -413,7 +430,8 @@ def mapping_thread():
                     if info:
                         src2user[key] = info
             elif client:
-                self_gate[client] = False
+                with lock:
+                    self_gate[client] = False
 
             # voice events: diff this client's channel voice-states ~1x/sec
             if CFG.get("voice_events", True) and client and now - st0.get("vs_t", 0) > 1.0:
@@ -422,18 +440,30 @@ def mapping_thread():
                     cur_vs = voice_states(c)
                 except Exception:
                     cur_vs = None
+                if DEBUG_EVENTS:
+                    print("[vs %s] cur=%s prev=%s none=%d" % (
+                        client, (len(cur_vs) if cur_vs is not None else None),
+                        (len(st0["vs_prev"]) if st0.get("vs_prev") else st0.get("vs_prev")),
+                        st0.get("vs_none", 0)))
                 if cur_vs is None:
-                    st0["vs_prev"] = None            # not in a call; reset so re-join re-seeds
+                    # A transient empty read (a re-render, or the call briefly off screen) must NOT
+                    # wipe the baseline, or we'd miss the leave/mute that happened meanwhile. Only
+                    # treat a sustained gap as "left the call".
+                    st0["vs_none"] = st0.get("vs_none", 0) + 1
+                    if st0["vs_none"] >= 5:
+                        st0["vs_prev"] = None
                 elif st0.get("vs_prev") is None:
+                    st0["vs_none"] = 0
                     st0["vs_prev"] = cur_vs           # seed silently (no events on first snapshot)
                 else:
+                    st0["vs_none"] = 0
                     diff_voice(client, c, st0["vs_prev"], cur_vs)
                     st0["vs_prev"] = cur_vs
 
             with lock:
                 active = [s for s, t in last_frame.items()
-                          if now - t < 0.4 and (client is None or src_client.get(s) == client)]
-            if not speaking or not active:
+                          if now - t < 0.4 and src_client.get(s) == client]
+            if not client or not speaking or not active:   # never bind without a known client
                 continue
             # Correlate (active stream) with (speaking user) using positive AND negative evidence:
             #  + a stream active while a user speaks is evidence they own it (extra when it's a

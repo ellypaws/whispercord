@@ -11,7 +11,7 @@ Resolution is two-tier:
      fails on stable/Canary; there we read the voice panel's fibers (user/voiceState roster) and
      the DOM speaking ring instead. The fiber `speaking` prop is NOT trustworthy (self-only on
      Canary, stuck-true for several users on PTB), so speaking is taken from the DOM ring class."""
-import json, urllib.request
+import json, time, urllib.request
 from websockets.sync.client import connect
 
 
@@ -23,6 +23,7 @@ class CDP:
         self._id = 0
         infos = self._cmd("Target.getTargets")["result"]["targetInfos"]
         page = self._pick_page(infos)
+        self.url = page.get("url")
         self.session = self._cmd("Target.attachToTarget", {"targetId": page["targetId"], "flatten": True})["result"]["sessionId"]
 
     @staticmethod
@@ -40,15 +41,23 @@ class CDP:
             return 2 if "/channels/" in u else 1
         return max(pages, key=score)
 
-    def _cmd(self, method, params=None, sid=None):
+    def _cmd(self, method, params=None, sid=None, timeout=10.0):
         self._id += 1
         msg = {"id": self._id, "method": method, "params": params or {}}
         if sid:
             msg["sessionId"] = sid
         self.ws.send(json.dumps(msg))
+        # Bound the wait: a wedged renderer (or a flood of unrelated events) must not block
+        # forever — raise so the caller drops + reconnects this CDP connection.
+        end = time.monotonic() + timeout
         while True:
-            d = json.loads(self.ws.recv())
+            remaining = end - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("CDP timeout waiting for %s" % method)
+            d = json.loads(self.ws.recv(timeout=remaining))
             if d.get("id") == self._id:
+                if d.get("error"):
+                    raise RuntimeError("CDP %s error: %s" % (method, d["error"]))
                 return d
 
     def evaluate(self, expr):
