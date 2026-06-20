@@ -324,6 +324,7 @@ function initAutosave() {
 // Engine-side live fields are mirrored by apply_live_config() in live_transcribe.py.
 const LIVE_FIELDS = new Set([
   "ui_newtop", "ui_ts", "ui_tsfmt", "a_highlight",        // wrapper-only display prefs
+  "ui_events",                                            // show voice events (engine emits live)
   "cap_screen",                                            // transcribe stream audio
   "self_en", "self_unmute", "self_vad", "self_device",     // own-voice (incl. live device switch)
   "g_dbfs", "g_vad", "g_reqspeak", "g_drop",               // silence gating

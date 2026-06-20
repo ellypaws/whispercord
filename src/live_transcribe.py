@@ -151,6 +151,8 @@ def apply_live_config(cfg):
     global GATE, GATE_DBFS, USE_VAD, NO_SPEECH, MIN_LOGPROB, DROP, REQUIRE_SPEAKING, SPK_GRACE_S
     global LANGUAGE, BEAM, SELF
     try:
+        if "voice_events" in cfg:
+            CFG["voice_events"] = bool(cfg["voice_events"])   # mapping_thread reads this each pass
         CAP = cfg.get("capture") or CAP
         CAP_VOICE = CAP.get("voice", True); CAP_SCREEN = CAP.get("screenshare", True)
         SCREEN_LABEL = CAP.get("screenshare_label", SCREEN_LABEL)

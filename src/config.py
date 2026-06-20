@@ -35,7 +35,7 @@ DEFAULTS = {
     },
     "voice_events": True,               # emit join/leave/mute/deafen/stream events per user
     "ui": {                             # desktop-wrapper display prefs
-        "show_timestamps": False,
+        "show_timestamps": True,
         "timestamp_format": "clock",    # clock (HH:MM:SS) | relative (12s ago)
         "newest_at_top": False,         # False = newest at bottom (classic); True = newest pops in on top
     },
