@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# PyInstaller build output
+build/
+dist/
+*.manifest
+
+# User-writable runtime data
+config.json
+cache/
+cuda/
+
+# Reverse-engineering dev kit + auxiliary node projects (not part of the app; large)
+tools/
+mcp-bd-bridge/
+transcriber-bot/
+node_modules/
+
+# Logs / OS / editor cruft
+*.log
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

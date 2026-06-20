@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Discord Live Transcriber</title>
+<style>
+  :root { --bg:#1e1f22; --panel:#2b2d31; --panel2:#313338; --line:#3f4248;
+          --txt:#dbdee1; --mut:#949ba4; --accent:#5865f2; --good:#23a55a; --bad:#f23f43; --warn:#f0b232; }
+  * { box-sizing:border-box; }
+  html, body { height:100%; }
+  body { margin:0; font:13px/1.45 "gg sans",Segoe UI,system-ui,sans-serif; background:var(--bg); color:var(--txt);
+         display:flex; flex-direction:column; height:100vh; overflow:hidden; }
+  header { display:flex; align-items:center; gap:12px; padding:10px 14px; background:var(--panel);
+           border-bottom:1px solid var(--line); flex:0 0 auto; z-index:5; }
+  header h1 { font-size:14px; margin:0; font-weight:600; letter-spacing:.2px; }
+  .grow { flex:1; }
+  .pill { display:inline-flex; align-items:center; gap:6px; padding:4px 10px; border-radius:999px;
+          background:var(--panel2); font-size:12px; white-space:nowrap; }
+  .dot { width:8px; height:8px; border-radius:50%; background:var(--mut); }
+  .dot.on { background:var(--good); box-shadow:0 0 6px var(--good); }
+  .dot.off { background:var(--bad); }
+  button { font:inherit; color:#fff; background:var(--accent); border:0; border-radius:6px;
+           padding:7px 14px; cursor:pointer; font-weight:600; }
+  button.sec { background:var(--panel2); color:var(--txt); }
+  button.danger { background:var(--bad); }
+  button:disabled { opacity:.5; cursor:default; }
+  .tabs { display:flex; gap:4px; padding:8px 14px 0; background:var(--panel); flex:0 0 auto; }
+  .tab { padding:7px 14px; cursor:pointer; color:var(--mut); border-bottom:2px solid transparent; font-weight:600; }
+  .tab.active { color:var(--txt); border-color:var(--accent); }
+  main { padding:14px; flex:1; min-height:0; display:flex; flex-direction:column; }
+  .view { display:none; flex:1; min-height:0; }
+  #v-live.active, #v-log.active { display:flex; }
+  #v-settings.active { display:block; overflow-y:auto; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:14px; margin-bottom:12px; }
+  .card h2 { font-size:12px; text-transform:uppercase; letter-spacing:.6px; color:var(--mut); margin:0 0 10px; }
+  .row { display:flex; align-items:center; gap:10px; margin:8px 0; }
+  .row > label { width:190px; color:var(--mut); }
+  input[type=text],input[type=number],select { background:var(--panel2); border:1px solid var(--line);
+           color:var(--txt); border-radius:5px; padding:6px 8px; font:inherit; flex:1; min-width:0; }
+  input[type=range] { flex:1; }
+  .hint { color:var(--mut); font-size:11px; margin-left:200px; margin-top:-4px; }
+  .clientrow { display:flex; align-items:center; gap:10px; padding:8px 0; border-top:1px solid var(--line); }
+  .clientrow:first-child { border-top:0; }
+  .clientrow .nm { width:150px; font-weight:600; }
+  .clientrow .st { flex:1; color:var(--mut); font-size:12px; }
+  .clientrow .cdot { width:9px; height:9px; border-radius:50%; flex:0 0 auto; background:#5c5e66; }
+  .cdot.good { background:var(--good); box-shadow:0 0 6px var(--good); }
+  .cdot.warn { background:var(--warn); }
+  .cdot.info { background:var(--accent); }
+  .cdot.off { background:#5c5e66; }
+  /* styled toggle switch */
+  .switch { position:relative; display:inline-block; width:38px; height:20px; flex:0 0 auto; }
+  .switch input { display:none; }
+  .switch .sl { position:absolute; inset:0; background:#4a4d55; border-radius:999px; cursor:pointer; transition:.15s; }
+  .switch .sl::before { content:""; position:absolute; width:14px; height:14px; left:3px; top:3px; background:#fff; border-radius:50%; transition:.15s; }
+  .switch input:checked + .sl { background:var(--good); }
+  .switch input:checked + .sl::before { transform:translateX(18px); }
+  .subhead { color:var(--mut); font-size:11px; text-transform:uppercase; letter-spacing:.4px; margin:10px 0 2px; }
+  .toggrow { display:flex; align-items:center; gap:10px; padding:6px 0; }
+  .toggrow .nm { flex:1; }
+  .toggrow .sub { color:var(--mut); font-size:11px; }
+  #log { background:#111214; border:1px solid var(--line); border-radius:8px; padding:10px;
+         flex:1; min-height:0; overflow:auto; font:11px/1.4 ui-monospace,Consolas,monospace; color:#b5bac1; white-space:pre-wrap; }
+  #transcript { display:flex; gap:10px; flex:1; min-height:0; overflow-x:auto; align-items:stretch; }
+  .tcol { flex:1 1 300px; min-width:270px; max-width:560px; display:flex; flex-direction:column;
+          background:var(--panel2); border:1px solid var(--line); border-radius:8px; position:relative; overflow:hidden; }
+  .tcol-h { padding:8px 10px; font-weight:600; font-size:12px; border-bottom:1px solid var(--line);
+            background:#2b2d31; display:flex; align-items:center; gap:7px; }
+  .tcol-h .cdot { width:8px; height:8px; border-radius:50%; background:var(--accent); }
+  .tcol-h .cnt { margin-left:auto; color:var(--mut); font-weight:400; font-size:11px; }
+  .tcol-h .cspk { color:var(--good); font-weight:400; font-size:11px; }
+  .tcol-h .cspk:not(:empty)::before { content:"🔊 "; }
+  .tcol-body { padding:10px; overflow-y:auto; flex:1; min-height:0; display:flex; flex-direction:column; gap:8px; }
+  .tline .ts { color:var(--mut); font-size:11px; font-variant-numeric:tabular-nums; margin-right:6px; }
+  .tline { content-visibility:auto; contain-intrinsic-size:0 40px; }   /* native windowing for huge logs */
+  .tcol-h .cnt { margin-left:auto; }
+  .tcol-clear { margin-left:10px; cursor:pointer; color:var(--mut); font-size:11px; font-weight:400; }
+  .tcol-clear:hover { color:var(--txt); }
+  .tevent { content-visibility:auto; contain-intrinsic-size:0 26px; display:flex; align-items:center; gap:8px;
+            opacity:.72; font-size:12px; color:var(--mut); padding:1px 0; }
+  .tevent img { width:18px; height:18px; border-radius:50%; flex:0 0 18px; background:var(--panel2); }
+  .tevent .etxt b { color:#c4c9d0; font-weight:600; }
+  .tevent .ts { font-variant-numeric:tabular-nums; margin-right:2px; }
+  .tcol-body::-webkit-scrollbar { width:8px; } .tcol-body::-webkit-scrollbar-thumb { background:#1a1b1e; border-radius:8px; }
+  .jump { position:absolute; bottom:10px; left:50%; transform:translateX(-50%); padding:5px 12px; border-radius:999px;
+          font-size:11px; box-shadow:0 2px 10px rgba(0,0,0,.5); display:none; }
+  .tline { display:flex; gap:8px; align-items:flex-start; }
+  .tline img { width:28px; height:28px; border-radius:50%; flex:0 0 28px; background:var(--panel2); }
+  .tline .body { flex:1; }
+  .tline .who { font-weight:600; font-size:12px; }
+  .tline .who small { color:var(--mut); font-weight:400; margin-left:6px; }
+  .tline .txt { color:var(--txt); }
+  .tline.interim .txt { color:var(--mut); font-style:italic; }
+  .empty { color:var(--mut); text-align:center; padding:30px; }
+  .savebar { display:flex; gap:8px; align-items:center; }
+  .saved { color:var(--mut); font-size:12px; }
+  .savebar .grow { flex:1; }
+  /* keyword pills */
+  .pillbox { flex:1; display:flex; flex-wrap:wrap; gap:6px; align-items:center; background:var(--panel2);
+             border:1px solid var(--line); border-radius:5px; padding:5px 6px; min-height:34px; }
+  .pillbox input { flex:1; min-width:100px; background:transparent; border:0; color:var(--txt); font:inherit; outline:none; padding:2px; }
+  .pill-tag { display:inline-flex; align-items:center; gap:7px; background:var(--accent); color:#fff;
+              border-radius:999px; padding:3px 6px 3px 10px; font-size:12px; }
+  .pill-x { cursor:pointer; width:15px; height:15px; border-radius:50%; display:inline-flex; align-items:center;
+            justify-content:center; background:rgba(255,255,255,.25); font-size:10px; line-height:1; }
+  .pill-x:hover { background:rgba(255,255,255,.5); }
+  input[type=color] { background:var(--panel2); border:1px solid var(--line); border-radius:5px; }
+  /* collapsible advanced */
+  details.card > summary { cursor:pointer; font-size:12px; text-transform:uppercase; letter-spacing:.6px;
+            color:var(--mut); font-weight:600; list-style:none; outline:none; }
+  details.card > summary::-webkit-details-marker { display:none; }
+  details.card > summary::before { content:"▸  "; }
+  details.card[open] > summary::before { content:"▾  "; }
+  details.card[open] > summary { margin-bottom:10px; }
+  /* toast */
+  .toast { position:fixed; bottom:18px; right:18px; background:var(--panel); border:1px solid var(--line); color:var(--txt);
+           padding:9px 14px; border-radius:8px; box-shadow:0 6px 20px rgba(0,0,0,.5); font-size:13px; opacity:0;
+           transform:translateY(8px); transition:opacity .2s,transform .2s; pointer-events:none; z-index:60;
+           display:flex; align-items:center; gap:8px; }
+  .toast.show { opacity:1; transform:none; }
+  .toast .tdot { width:8px; height:8px; border-radius:50%; background:var(--good); }
+  .toast.saving .tdot { background:var(--warn); }
+</style>
+</head>
+<body>
+<header>
+  <h1>🎙 Discord Live Transcriber</h1>
+  <span class="pill"><span id="bdot" class="dot"></span><span id="bstat">stopped</span></span>
+  <span class="pill"><span id="rdot" class="dot"></span><span id="rstat">relay</span></span>
+  <span class="pill" id="activepill" title="active audio streams">0 streams</span>
+  <span class="grow"></span>
+  <button id="startbtn">Start</button>
+  <button id="stopbtn" class="danger" disabled>Stop</button>
+</header>
+
+<div class="tabs">
+  <div class="tab active" data-v="live">Live</div>
+  <div class="tab" data-v="settings">Settings</div>
+  <div class="tab" data-v="log">Console</div>
+</div>
+
+<main>
+  <section id="v-live" class="view active">
+    <div id="transcript"><div class="empty">Waiting for speech… start the engine and join a voice call.</div></div>
+  </section>
+
+  <section id="v-settings" class="view">
+    <div class="card">
+      <h2>Discord clients</h2>
+      <div id="clients"><div class="empty">loading…</div></div>
+      <div class="hint" style="margin:8px 0 0">Clients running without a debug port can be restarted to enable name resolution (this closes the current call).</div>
+    </div>
+
+    <div class="card">
+      <h2>Engine</h2>
+      <div class="row"><label>Whisper model</label>
+        <select id="whisper_model">
+          <option>tiny</option><option>base</option><option>small</option>
+          <option>medium</option><option>large-v3</option>
+        </select></div>
+      <div class="row"><label>Language</label>
+        <select id="adv_lang">
+          <option value="">Auto-detect</option>
+          <option value="en">English</option><option value="es">Spanish</option>
+          <option value="fr">French</option><option value="de">German</option>
+          <option value="it">Italian</option><option value="pt">Portuguese</option>
+          <option value="nl">Dutch</option><option value="ru">Russian</option>
+          <option value="ja">Japanese</option><option value="ko">Korean</option>
+          <option value="zh">Chinese</option><option value="ar">Arabic</option>
+          <option value="hi">Hindi</option><option value="tr">Turkish</option>
+          <option value="pl">Polish</option><option value="uk">Ukrainian</option>
+          <option value="sv">Swedish</option><option value="id">Indonesian</option>
+          <option value="vi">Vietnamese</option><option value="th">Thai</option>
+          <option value="fil">Filipino</option>
+        </select></div>
+      <div class="hint" id="gpuhint"></div>
+    </div>
+
+    <div class="card">
+      <h2>Subtitle overlay (per client)</h2>
+      <div id="overlay_clients"><div class="hint">No Discord clients detected yet.</div></div>
+      <div class="hint">Toggle the in-Discord subtitle overlay per client. Applies on engine restart.</div>
+    </div>
+
+    <div class="card">
+      <h2>Your voice (microphone)</h2>
+      <div class="row"><label>Transcribe my own voice</label><input type="checkbox" id="self_en" /></div>
+      <div class="row"><label>Only when unmuted</label><input type="checkbox" id="self_unmute" /></div>
+      <div class="row"><label>Only when Discord says I'm speaking</label><input type="checkbox" id="self_vad" /></div>
+      <div class="hint">Uses Discord's own noise gate/VAD + mute state per client, so it won't transcribe room noise the way a raw mic would.</div>
+      <div class="row"><label>Input device</label>
+        <select id="self_device"><option value="">System default</option></select></div>
+      <div class="subhead">Apply to clients</div>
+      <div id="self_clients"><div class="hint">No Discord clients detected yet.</div></div>
+    </div>
+
+    <div class="card">
+      <h2>Silence gating</h2>
+      <div class="row"><label>Min loudness (dBFS)</label>
+        <input type="range" id="g_dbfs" min="-70" max="-30" step="1" />
+        <span id="g_dbfs_v" style="width:46px;text-align:right"></span></div>
+      <div class="hint">Higher = gate more aggressively (kills "Thank you." on near-silence).</div>
+      <div class="row"><label>Silero VAD</label><input type="checkbox" id="g_vad" /></div>
+      <div class="row"><label>Drop phrases</label>
+        <input type="text" id="g_drop" placeholder="thank you, bye, you" /></div>
+    </div>
+
+    <div class="card">
+      <h2>Alerts</h2>
+      <div class="row"><label>Keywords</label>
+        <div id="kw" class="pillbox"><input id="kw-input" type="text" placeholder="type a word, press Enter" /></div></div>
+      <div class="hint">Red highlight + beep when spoken (e.g. your name).</div>
+      <div class="row"><label>Play sound</label><input type="checkbox" id="a_sound" /></div>
+      <div class="row"><label>Highlight color</label>
+        <input type="color" id="a_highlight" style="flex:0 0 52px;height:30px;padding:2px" /></div>
+    </div>
+
+    <div class="card">
+      <h2>Display</h2>
+      <div class="row"><label>Show voice events</label><input type="checkbox" id="ui_events" /></div>
+      <div class="hint">Join/leave, mute, deafen, stream start/stop per user.</div>
+      <div class="row"><label>Newest on top</label><input type="checkbox" id="ui_newtop" /></div>
+      <div class="hint">Off = newest lines appear at the bottom (classic chat). On = newest pops in at the top.</div>
+      <div class="row"><label>Show timestamps</label><input type="checkbox" id="ui_ts" /></div>
+      <div class="row"><label>Timestamp format</label>
+        <select id="ui_tsfmt"><option value="clock">clock (14:03:22)</option><option value="relative">relative (12s ago)</option></select></div>
+      <div class="row"><label>Overlay log height (px)</label><input type="number" id="o_logh" min="120" max="900" /></div>
+    </div>
+
+    <div class="card">
+      <h2>Overlay fade</h2>
+      <div class="row"><label>Subtitle timeout (ms)</label><input type="number" id="o_timeout" /></div>
+      <div class="row"><label>Max blocks</label><input type="number" id="o_max" /></div>
+      <div class="row"><label>Fade starts at</label><input type="number" id="o_fade" /></div>
+      <div class="row"><label>Min fade opacity</label><input type="number" id="o_minop" step="0.05" /></div>
+    </div>
+
+    <details class="card">
+      <summary>Advanced</summary>
+      <div class="row"><label>Beam size</label><input type="number" id="adv_beam" min="1" max="10" /></div>
+      <div class="hint">1 = greedy &amp; fastest; higher = more accurate, slower.</div>
+      <div class="row"><label>Device</label>
+        <select id="adv_device"><option value="cuda">cuda (GPU)</option><option value="cpu">cpu</option></select></div>
+      <div class="row"><label>Compute type</label>
+        <select id="adv_compute"><option>float16</option><option>int8_float16</option><option>int8</option><option>float32</option></select></div>
+      <div class="row"><label>Relay port</label><input type="number" id="adv_relay" /></div>
+    </details>
+
+    <div class="savebar">
+      <span class="grow"></span>
+      <button id="restartbtn" class="sec">Restart engine to apply</button>
+    </div>
+  </section>
+
+  <div id="toast" class="toast"><span class="tdot"></span><span id="toasttext">Saved</span></div>
+
+  <section id="v-log" class="view">
+    <div id="log"></div>
+  </section>
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,22 @@
+# Core capture + transcription
+frida>=17.0
+faster-whisper>=1.2.1
+numpy
+sounddevice>=0.4
+websockets>=12
+
+# Runtime offset auto-locate (survives Discord updates)
+capstone>=5.0
+pefile>=2023.2.7
+
+# Desktop app (GUI + tray)
+pywebview>=5.0
+pystray>=0.19
+pillow>=10.0
+
+# Packaging
+pyinstaller>=6.0
+
+# NOTE: the CUDA runtime (cuBLAS/cuDNN) is intentionally NOT a dependency — it is downloaded
+# on first GPU use by cuda_setup.py, which keeps both installs and the packaged build small.
+# To preinstall it instead: pip install nvidia-cublas-cu12 nvidia-cudnn-cu12

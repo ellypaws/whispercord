@@ -1,0 +1,87 @@
+"""Config loader: defaults <- config.json <- env overrides. Used by the orchestrator and passed to the overlay."""
+import os, json
+import paths
+
+DEFAULTS = {
+    "whisper_model": "small",
+    "language": "",                     # "" = auto-detect; e.g. "en", "ja"
+    "beam_size": 1,                     # 1 = greedy (fastest); higher = more accurate
+    "device": "cuda",                   # cuda | cpu
+    "compute_type": "float16",          # float16 (gpu) | int8_float16 | int8 (cpu)
+    "inject_overlay": True,             # also show subtitles inside Discord (via CDP)
+    "relay_port": 8765,
+    "cdp_port": 9223,                   # back-compat single port
+    "cdp_ports": [9223, 9224, 9225, 9226],  # PTB / Discord / Canary / Dev debug ports (any reachable used)
+    "silence_s": 0.6,
+    "interim_every_s": 1.0,
+    "min_utt_s": 0.4,
+    "max_utt_s": 12.0,
+    "overlay": {
+        "subtitle_timeout_ms": 8000,
+        "max_blocks": 6,
+        "fade_start_count": 5,
+        "min_fade_opacity": 0.25,
+        "log_height": 300,              # in-Discord transcript log height (px, drag-resizable)
+        "log_autoscroll": True,
+    },
+    "voice_events": True,               # emit join/leave/mute/deafen/stream events per user
+    "ui": {                             # desktop-wrapper display prefs
+        "show_timestamps": False,
+        "timestamp_format": "clock",    # clock (HH:MM:SS) | relative (12s ago)
+        "newest_at_top": False,         # False = newest at bottom (classic); True = newest pops in on top
+    },
+    "self_transcribe": {                # transcribe your OWN microphone too
+        "enabled": False,
+        "only_when_unmuted": True,      # skip while self-muted in Discord
+        "require_discord_speaking": True,  # only when Discord's VAD says you're speaking (not just our gate)
+        "device": None,                 # input device index/name, or None = system default
+        "clients": {},                  # per-client {exe: bool}; absent = on when enabled
+    },
+    "alerts": {
+        "keywords": [],
+        "sound": True,
+        "highlight": "#f04747",
+    },
+    "gating": {
+        "min_rms_dbfs": -50.0,          # below this loudness, skip the model entirely (silence)
+        "vad": True,                    # Silero VAD strips non-speech regions
+        "no_speech_threshold": 0.6,     # segment no_speech_prob above this is suspect
+        "min_avg_logprob": -1.0,        # segment avg_logprob below this is suspect
+        "drop_phrases": [               # known silence-hallucinations, dropped when quiet/low-conf
+            "thank you", "thanks for watching", "thank you for watching",
+            "please subscribe", "subscribe", "you", "bye", "so", "okay", "ok",
+            "...", "♪", "music",
+        ],
+    },
+}
+
+def _merge(a, b):
+    for k, v in b.items():
+        if isinstance(v, dict) and isinstance(a.get(k), dict):
+            _merge(a[k], v)
+        else:
+            a[k] = v
+    return a
+
+def load(path=None):
+    cfg = json.loads(json.dumps(DEFAULTS))
+    path = path or paths.data("config.json")
+    if os.path.exists(path):
+        try:
+            with open(path, encoding="utf-8") as f:
+                _merge(cfg, json.load(f))
+        except Exception as e:
+            print("[config] failed to read %s: %s" % (path, e))
+    if os.environ.get("WHISPER_MODEL"):
+        cfg["whisper_model"] = os.environ["WHISPER_MODEL"]
+    if os.environ.get("RELAY_PORT"):
+        cfg["relay_port"] = int(os.environ["RELAY_PORT"])
+    if os.environ.get("CDP_PORT"):
+        cfg["cdp_port"] = int(os.environ["CDP_PORT"])
+    if os.environ.get("CDP_PORTS"):
+        cfg["cdp_ports"] = [int(p) for p in os.environ["CDP_PORTS"].split(",") if p.strip()]
+    # ensure the single cdp_port is always among the probed ports
+    cfg.setdefault("cdp_ports", [cfg["cdp_port"]])
+    if cfg["cdp_port"] not in cfg["cdp_ports"]:
+        cfg["cdp_ports"] = [cfg["cdp_port"]] + cfg["cdp_ports"]
+    return cfg
