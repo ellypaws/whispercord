@@ -73,14 +73,13 @@
   .tcol-h .cspk { color:var(--good); font-weight:400; font-size:11px; }
   .tcol-body { padding:10px; overflow-y:auto; flex:1; min-height:0; display:flex; flex-direction:column; gap:8px; }
   .tline .ts { color:var(--mut); font-size:11px; font-variant-numeric:tabular-nums; margin-right:6px; }
-  .tline { content-visibility:auto; contain-intrinsic-size:0 40px; }   /* native windowing for huge logs */
   .tcol-h .cnt { margin-left:auto; }
   .tcol-clear { margin-left:8px; cursor:pointer; color:var(--mut); font-size:11px; font-weight:400; }
   .tcol-clear:hover { color:var(--txt); }
   .tcol-flip { margin-left:4px; cursor:pointer; color:var(--mut); display:inline-flex; padding:2px; border-radius:4px; }
   .tcol-flip:hover { color:var(--txt); background:rgba(255,255,255,.06); }
   .tcol-flip .lu { width:14px; height:14px; }
-  .tevent { content-visibility:auto; contain-intrinsic-size:0 26px; display:flex; align-items:center; gap:8px;
+  .tevent { display:flex; align-items:center; gap:8px;
             opacity:.72; font-size:12px; color:var(--mut); padding:1px 0; }
   .tevent img { width:18px; height:18px; border-radius:50%; flex:0 0 18px; background:var(--panel2); }
   .tevent .etxt b { color:#c4c9d0; font-weight:600; }
@@ -285,6 +284,9 @@
       <div class="hint">Higher = gate more aggressively (kills "Thank you." on near-silence).</div>
       <div class="row"><label>Silero VAD</label>
         <label class="switch"><input type="checkbox" id="g_vad" /><span class="sl"></span></label></div>
+      <div class="row"><label>End when not speaking</label>
+        <label class="switch"><input type="checkbox" id="g_reqspeak" /><span class="sl"></span></label></div>
+      <div class="hint">End an utterance once Discord's speaking indicator goes quiet. Off = segment by audio only (turn off if speech is being split into too many lines).</div>
       <div class="row"><label>Drop phrases</label>
         <input type="text" id="g_drop" placeholder="thank you, bye, you" /></div>
     </div>

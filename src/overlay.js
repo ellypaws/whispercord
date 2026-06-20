@@ -89,6 +89,7 @@
     .vt-ico{width:14px;height:14px;flex:0 0 auto;vertical-align:-2px}
     .vtl-ev{display:flex;align-items:center;gap:6px;margin:3px 0;padding-left:6px;opacity:.78;font-size:12px;color:#b5bac1}
     .vtl-ev .vt-ico{margin-top:0}
+    .vtl-ev-av{width:14px;height:14px;margin-top:0}
     .vtl-ev b{color:#dbdee1;font-weight:600}
     .vtl-ev .vtl-t{margin-right:0}
     .vt-text mark,.vtl mark{background:${ALERT_COLOR};color:#fff;border-radius:3px;padding:0 2px}`;
@@ -183,6 +184,10 @@
   logBody.style.height = LOG_H + "px";                  // configurable, drag-resizable
   let pinned = true, lastAuto = 0, jumpTimer = null;
   const atBottom = () => logBody.scrollHeight - logBody.scrollTop - logBody.clientHeight < 28;
+  const stickLog = () => {                               // scroll to bottom, then re-apply next frame
+    lastAuto = Date.now(); logBody.scrollTop = logBody.scrollHeight;
+    requestAnimationFrame(() => { if (pinned) { lastAuto = Date.now(); logBody.scrollTop = logBody.scrollHeight; } });
+  };
   logBody.addEventListener("scroll", () => {
     if (Date.now() - lastAuto < 130) return;            // ignore our own auto-scroll (no flicker)
     if (atBottom()) { pinned = true; logJump.style.display = "none"; if (jumpTimer) { clearTimeout(jumpTimer); jumpTimer = null; } }
@@ -196,15 +201,16 @@
     const row = document.createElement("div"); row.className = "vtl" + (kw ? " alert" : "");
     row.dataset.uid = uid;
     const av = document.createElement("img"); av.className = "vtl-av"; if (avatar) av.src = avatar;
+    av.onload = () => { if (LOG_AUTOSCROLL && pinned) stickLog(); };   // keep pinned once avatar lays out
     const c = document.createElement("div"); c.className = "vtl-c";
     const t = document.createElement("span"); t.className = "vtl-t"; t.textContent = new Date(ts).toLocaleTimeString([], { hour12: false });
     const n = document.createElement("span"); n.className = "vtl-n"; n.textContent = (kw ? "🔔 " : "") + (name || "unknown") + ":"; n.style.color = colorFor(uid);
     const b = document.createElement("span"); b.className = "vtl-tx"; b.dataset.text = text || ""; setText(b, text, kw);
     c.append(t, n, b); row.append(av, c); logBody.appendChild(row);
     while (logBody.children.length > LOG_MAX) logBody.removeChild(logBody.firstChild);
-    if (LOG_AUTOSCROLL && pinned) { lastAuto = Date.now(); logBody.scrollTop = logBody.scrollHeight; }
+    if (LOG_AUTOSCROLL && pinned) stickLog();
   }
-  function logEvent(name, uid, event, ts) {
+  function logEvent(name, uid, event, ts, avatar) {
     const meta = EVENT[event]; if (!meta) return;
     const row = document.createElement("div"); row.className = "vtl-ev";
     const t = document.createElement("span"); t.className = "vtl-t"; t.textContent = new Date(ts).toLocaleTimeString([], { hour12: false });
@@ -212,9 +218,15 @@
     const tx = document.createElement("span");
     const b = document.createElement("b"); b.textContent = name || "someone"; b.style.color = colorFor(uid);
     tx.append(b, document.createTextNode(" " + meta[1]));
-    row.append(t, ic, tx); logBody.appendChild(row);
+    if (avatar) {                                       // show the user's avatar on the event row
+      const av = document.createElement("img"); av.className = "vtl-av vtl-ev-av"; av.src = avatar;
+      av.onerror = () => { av.style.display = "none"; };
+      av.onload = () => { if (LOG_AUTOSCROLL && pinned) stickLog(); };
+      row.append(t, av, ic, tx);
+    } else { row.append(t, ic, tx); }
+    logBody.appendChild(row);
     while (logBody.children.length > LOG_MAX) logBody.removeChild(logBody.firstChild);
-    if (LOG_AUTOSCROLL && pinned) { lastAuto = Date.now(); logBody.scrollTop = logBody.scrollHeight; }
+    if (LOG_AUTOSCROLL && pinned) stickLog();
   }
   // re-apply keyword highlighting to everything already on screen after a live keyword edit
   function rehighlight() {
@@ -272,7 +284,7 @@
       return;
     }
     if (CLIENT && m.client && m.client !== CLIENT) return;   // ignore other clients' calls
-    if (m.type === "event") { logEvent(m.name, m.userId, m.event, m.ts || Date.now()); return; }
+    if (m.type === "event") { logEvent(m.name, m.userId, m.event, m.ts || Date.now(), m.avatar); return; }
     if (m.type === "keepalive") {
       // the speaker is still talking even if this chunk had no words; keep the subtitle alive
       const b = blocks.get(m.userId);

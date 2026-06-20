@@ -136,7 +136,7 @@ function selfFor(exe) {
 function setSelf(exe, on) {
   const s = Object.assign({}, CFG.self_transcribe);
   s.clients = Object.assign({}, s.clients || {}); s.clients[exe] = on; CFG.self_transcribe = s;
-  API.save_config(CFG); toast("Own-voice " + (on ? "on" : "off") + " for " + exe + " — restart engine", false);
+  API.save_config(CFG); pushLiveConfig(CFG); toast("Own-voice " + (on ? "on" : "off") + " for " + exe, false);
 }
 function makeSwitch(checked, onChange) {
   const lab = document.createElement("label"); lab.className = "switch";
@@ -181,6 +181,7 @@ function fillForm(c) {
   $("g_dbfs").value = g.min_rms_dbfs ?? -50;
   $("g_dbfs_v").textContent = $("g_dbfs").value;
   $("g_vad").checked = g.vad !== false;
+  $("g_reqspeak").checked = g.require_speaking !== false;
   $("g_drop").value = (g.drop_phrases || []).join(", ");
   const a = c.alerts || {};
   kwList = (a.keywords || []).slice(); renderPills();
@@ -230,6 +231,7 @@ function readForm() {
     gating: Object.assign({}, CFG.gating, {
       min_rms_dbfs: parseFloat($("g_dbfs").value),
       vad: $("g_vad").checked,
+      require_speaking: $("g_reqspeak").checked,
       drop_phrases: csv($("g_drop").value),
     }),
     alerts: Object.assign({}, CFG.alerts, {
@@ -292,12 +294,17 @@ function toast(text, saving) {
   clearTimeout(toast._h);
   if (!saving) toast._h = setTimeout(() => t.classList.remove("show"), 1600);
 }
+// push the restart-free settings to the running engine over the relay control bus, so toggles
+// like stream audio / own-voice / gating apply live without an engine restart
+function pushLiveConfig(cfg) {
+  try { if (relay && relay.readyState === 1) relay.send(JSON.stringify({ type: "setConfig", config: cfg })); } catch (e) {}
+}
 function scheduleSave() {
   if (!API) return;
   toast("Saving…", true);
   clearTimeout(saveTimer);
   saveTimer = setTimeout(async () => {
-    try { const cfg = readForm(); await API.save_config(cfg); CFG = cfg; toast("Saved ✓", false); }
+    try { const cfg = readForm(); await API.save_config(cfg); CFG = cfg; pushLiveConfig(cfg); toast("Saved ✓", false); }
     catch (e) { toast("Save failed", false); }
   }, 450);
 }
@@ -313,8 +320,15 @@ function initAutosave() {
   v.addEventListener("input", onChange);
   v.addEventListener("change", onChange);
 }
-// settings that apply live in the wrapper and never need an engine restart
-const LIVE_FIELDS = new Set(["ui_newtop", "ui_ts", "ui_tsfmt", "a_highlight"]);
+// settings that apply live (UI-side, or pushed to the engine over the relay) and never restart.
+// Engine-side live fields are mirrored by apply_live_config() in live_transcribe.py.
+const LIVE_FIELDS = new Set([
+  "ui_newtop", "ui_ts", "ui_tsfmt", "a_highlight",        // wrapper-only display prefs
+  "cap_screen",                                            // transcribe stream audio
+  "self_en", "self_unmute", "self_vad", "self_device",     // own-voice (incl. live device switch)
+  "g_dbfs", "g_vad", "g_reqspeak", "g_drop",               // silence gating
+  "adv_lang", "adv_beam",                                  // language + beam size
+]);
 function markRestartNeeded() { if (engineRunning) $("restartbar").style.display = "flex"; }
 function clearRestartNeeded() { $("restartbar").style.display = "none"; }
 
@@ -540,7 +554,14 @@ function panelFor(client) {
   return p;
 }
 
-function pinScroll(p) { if (p.pinned) { p.lastAuto = Date.now(); p.body.scrollTop = p.newestTop ? 0 : p.body.scrollHeight; } }
+function scrollToEnd(p) { p.lastAuto = Date.now(); p.body.scrollTop = p.newestTop ? 0 : p.body.scrollHeight; }
+function pinScroll(p) {
+  if (!p.pinned) return;
+  scrollToEnd(p);
+  // Re-apply on the next frame: a just-appended row (a voice event, or wrapped text) can lay out
+  // taller than at first measure, which otherwise leaves us a few px short and "stuck".
+  requestAnimationFrame(() => { if (p.pinned) scrollToEnd(p); });
+}
 function capLines(p) {                       // drop the OLDEST rows (opposite end from newest)
   while (p.body.children.length > 200) p.body.removeChild(p.newestTop ? p.body.lastChild : p.body.firstChild);
 }
@@ -586,6 +607,7 @@ function renderEvent(m) {
   if (m.avatar) {                                    // show the user's avatar on the event row
     const av = document.createElement("img"); av.src = m.avatar; av.alt = "";
     av.onerror = () => { av.style.visibility = "hidden"; };
+    av.onload = () => pinScroll(p);                  // keep the bottom pinned once the avatar lays out
     line.appendChild(av);
   }
   line.appendChild(txt);
@@ -611,6 +633,7 @@ function renderTranscript(m) {
     const img = document.createElement("img");
     img.src = m.avatar || DEFAULT_AV;
     img.onerror = () => { img.style.visibility = "hidden"; };
+    img.onload = () => pinScroll(p);                  // re-pin once the avatar lays out
     const body = document.createElement("div"); body.className = "body";
     body.innerHTML = `<div class="who"><span class="ts"></span><span class="nm"></span></div><div class="txt"></div>`;
     const nmEl = body.querySelector(".nm");
@@ -708,12 +731,13 @@ async function refreshModels() {
 const HELP = {
   whisper_model: "**Speech model.** Bigger = more accurate, slower, more VRAM.\n- `tiny`/`base` — fastest, rough\n- `small` — good balance (default)\n- `medium`/`large-v3` — best accuracy (needs a strong GPU)\n\nModels download once and are reused — switching back never re-downloads.",
   adv_lang: "**Language.** `Auto-detect` lets Whisper guess per utterance. Pin a language to stop it switching mid-call and to speed things up slightly.",
-  cap_screen: "**Transcribe stream audio.** Include Go Live / screenshare audio (game, music, video) in transcription. Off = only people's microphones. Applies on engine restart.",
+  cap_screen: "**Transcribe stream audio.** Include Go Live / screenshare audio (game, music, video) in transcription. Off = only people's microphones. Applies live, no restart.",
   self_en: "**Transcribe your own microphone** in addition to everyone else's audio. Uses your mic, gated by Discord's own mute/VAD state below.",
   self_unmute: "Only capture your mic while you are **unmuted in Discord**. Off = transcribe even when self-muted.",
   self_vad: "Only capture your mic when **Discord's voice activity** says you're speaking — avoids transcribing background room noise.",
   g_dbfs: "**Silence gate.** Audio quieter than this (in dBFS) is skipped before it ever reaches the model. Higher (e.g. -45) gates harder and kills phantom *\"Thank you.\"* on near-silence.",
   g_vad: "**Silero VAD** trims non-speech regions from each chunk before transcription — fewer hallucinations on noise.",
+  g_reqspeak: "**End when not speaking.** Closes an utterance once Discord's per-user speaking indicator goes quiet (after a short grace), which stops screenshare/comfort-noise bleed from transcribing forever. If your speech is being split into too many lines, turn this off to segment purely by audio.",
   g_drop: "**Drop phrases** (comma-separated) that Whisper hallucinates on silence (e.g. `thank you, bye`). Dropped only when the audio is quiet or low-confidence.",
   kw: "**Keyword alerts.** Words that get **highlighted** + a beep when spoken (e.g. your name). Editing these re-highlights the existing transcript live.",
   a_sound: "Play a short **beep** when a keyword is detected.",
