@@ -86,11 +86,11 @@ def ensure_cuda(log=print, on_progress=None):
             on_progress(100, "Extracting GPU runtime %d/%d" % (i + 1, n))
         log("[cuda] extracting %s ..." % fn)
         with zipfile.ZipFile(tmp) as z:
-            for n in z.namelist():
-                norm = n.replace("\\", "/")
+            for member in z.namelist():
+                norm = member.replace("\\", "/")
                 if norm.lower().endswith(".dll") and "/bin/" in norm:
-                    with open(os.path.join(dest, os.path.basename(n)), "wb") as f:
-                        f.write(z.read(n))
+                    with open(os.path.join(dest, os.path.basename(member)), "wb") as f:
+                        f.write(z.read(member))
         try:
             os.remove(tmp)
         except Exception:
