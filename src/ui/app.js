@@ -176,6 +176,7 @@ const toHex = (s) => {
 function fillForm(c) {
   CFG = c;
   $("whisper_model").value = c.whisper_model;
+  $("cap_screen").checked = (c.capture || {}).screenshare !== false;
   const g = c.gating || {};
   $("g_dbfs").value = g.min_rms_dbfs ?? -50;
   $("g_dbfs_v").textContent = $("g_dbfs").value;
@@ -220,6 +221,7 @@ function readForm() {
   return Object.assign({}, CFG, {
     whisper_model: $("whisper_model").value,
     voice_events: $("ui_events").checked,
+    capture: Object.assign({}, CFG.capture, { screenshare: $("cap_screen").checked }),
     language: $("adv_lang").value.trim(),
     beam_size: parseInt($("adv_beam").value, 10) || 1,
     device: $("adv_device").value,
@@ -580,7 +582,13 @@ function renderEvent(m) {
   txt.innerHTML = ts + "<b></b> " + escapeHtml(EVENT_LABEL[m.event] || m.event);
   txt.querySelector("b").textContent = m.name || "someone";
   if (ts) txt.querySelector(".ts").textContent = fmtTs(m.ts || Date.now());
-  line.appendChild(ico); line.appendChild(txt);
+  line.appendChild(ico);
+  if (m.avatar) {                                    // show the user's avatar on the event row
+    const av = document.createElement("img"); av.src = m.avatar; av.alt = "";
+    av.onerror = () => { av.style.visibility = "hidden"; };
+    line.appendChild(av);
+  }
+  line.appendChild(txt);
   placeRow(p, line);
   capLines(p); pinScroll(p);
 }
@@ -700,6 +708,7 @@ async function refreshModels() {
 const HELP = {
   whisper_model: "**Speech model.** Bigger = more accurate, slower, more VRAM.\n- `tiny`/`base` — fastest, rough\n- `small` — good balance (default)\n- `medium`/`large-v3` — best accuracy (needs a strong GPU)\n\nModels download once and are reused — switching back never re-downloads.",
   adv_lang: "**Language.** `Auto-detect` lets Whisper guess per utterance. Pin a language to stop it switching mid-call and to speed things up slightly.",
+  cap_screen: "**Transcribe stream audio.** Include Go Live / screenshare audio (game, music, video) in transcription. Off = only people's microphones. Applies on engine restart.",
   self_en: "**Transcribe your own microphone** in addition to everyone else's audio. Uses your mic, gated by Discord's own mute/VAD state below.",
   self_unmute: "Only capture your mic while you are **unmuted in Discord**. Off = transcribe even when self-muted.",
   self_vad: "Only capture your mic when **Discord's voice activity** says you're speaking — avoids transcribing background room noise.",
