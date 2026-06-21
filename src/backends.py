@@ -10,10 +10,10 @@ and hallucination gating stay in the engine, ABOVE the backend, so behaviour is 
 across engines — only the model call differs.
 """
 
-# Whether the whisper.cpp backend (hip/vulkan) is wired up. The binding/downloader exist and are
-# validated, but stays False until the GPU artifacts are hosted (P3 CI) so auto-routing keeps
-# degrading hip/vulkan to cpu rather than 404ing on a download. Flip to True once artifacts ship.
-WHISPERCPP_AVAILABLE = False
+# whisper.cpp backend (hip/vulkan) is live: the runtime is delegated (downloaded on first GPU use).
+# A failed/absent download degrades to CPU gracefully (see load_whispercpp callers), so this is safe
+# to leave on even before every artifact is published.
+WHISPERCPP_AVAILABLE = True
 
 
 class CT2Backend:

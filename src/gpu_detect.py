@@ -34,6 +34,10 @@ _AMD_GFX = [
 # RDNA3/3.5/4; older AMD (RDNA2) routes to vulkan, which is the broad fallback.
 HIP_GFX_SUPPORTED = {"gfx1100", "gfx1101", "gfx1102", "gfx1150", "gfx1151", "gfx1200", "gfx1201"}
 
+# HIP runtimes (large, per-arch) aren't published yet — route all AMD through Vulkan (universal) for
+# now. Flip on once the whispercpp-hip-* assets ship to enable HIP for supported Radeon.
+HIP_ENABLED = False
+
 _NO_WINDOW = 0x08000000
 
 
@@ -123,14 +127,19 @@ def resolve(requested, log=print):
             return "cuda"
         log("[gpu] device=cuda but no NVIDIA GPU detected (CUDA is NVIDIA-only) - using cpu")
         return "cpu"
-    if req in ("hip", "vulkan"):
-        return _wcpp_or_cpu(req, log)
+    if req == "vulkan":
+        return _wcpp_or_cpu("vulkan", log)
+    if req == "hip":
+        if HIP_ENABLED:
+            return _wcpp_or_cpu("hip", log)
+        log("[gpu] hip runtime not published yet - using vulkan")
+        return _wcpp_or_cpu("vulkan", log)
 
     # auto
     if nvidia_present():
         return "cuda"
     gfx, name = amd_gpu()
-    if gfx in HIP_GFX_SUPPORTED:
+    if HIP_ENABLED and gfx in HIP_GFX_SUPPORTED:
         log("[gpu] auto: AMD %s (%s) -> hip" % (name, gfx))
         return _wcpp_or_cpu("hip", log)
     if has_vulkan_gpu():

@@ -40,6 +40,8 @@ hiddenimports += [
     "clr", "clr_loader", "pythonnet",
     "pystray._win32",
     "numpy", "pefile", "capstone",
+    # device routing + backends (whispercpp_ffi/setup are imported lazily for hip/vulkan)
+    "gpu_detect", "backends", "cuda_setup", "whispercpp_ffi", "whispercpp_setup",
 ]
 
 # Our own source + resources (entry script lives in src/).
