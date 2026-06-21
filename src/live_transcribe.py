@@ -673,6 +673,10 @@ def mapping_thread():
                     spk_poll[client] = now
                 for _uid in speaking:
                     last_speaking[_uid] = now
+                # push who's speaking every tick (not diffed) so the UI always has the current set;
+                # the UI applies a short hold to smooth any flicker in Discord's own indicator
+                if client:
+                    broadcast({"type": "speaking", "client": client, "ids": list(speaking)})
             except Exception:
                 st0["fails"] += 1
                 if st0["fails"] >= 5:           # tolerate transient errors; drop only after sustained failure
@@ -758,8 +762,11 @@ def mapping_thread():
                     for uid, vst in rvs.items():
                         info = resolve_user(c, uid)
                         if info:
-                            members.append({"userId": uid, "name": info["name"],
-                                            "avatar": info.get("avatar"), "stream": bool(vst.get("stream"))})
+                            members.append({"userId": uid, "name": info["name"], "avatar": info.get("avatar"),
+                                            "stream": bool(vst.get("stream")),
+                                            "mute": bool(vst.get("mute") or vst.get("selfMute")),
+                                            "deaf": bool(vst.get("deaf") or vst.get("selfDeaf")),
+                                            "video": bool(vst.get("video"))})
                     broadcast({"type": "roster", "client": client, "members": members})
 
             # --- native per-stream binding via ssrc (the reliable path) ---

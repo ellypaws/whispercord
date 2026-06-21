@@ -79,7 +79,25 @@
             background:#2b2d31; display:flex; align-items:center; gap:7px; }
   .tcol-h .cdot { width:8px; height:8px; border-radius:50%; background:var(--accent); }
   .tcol-h .cnt { margin-left:auto; color:var(--mut); font-weight:400; font-size:11px; }
-  .tcol-h .cspk { color:var(--good); font-weight:400; font-size:11px; }
+  /* per-column roster faces (green ring = speaking; replaces the old "N speaking" text) */
+  .tcol-h .tcol-roster { flex:1; min-width:0; display:flex; align-items:center; gap:4px; overflow:hidden; }
+  .tcol-roster.bottom { flex:0 0 auto; display:flex; align-items:center; gap:4px; overflow:hidden;
+                        padding:6px 10px; border-top:1px solid var(--line); background:#2b2d31; }
+  .rface { position:relative; width:22px; height:22px; flex:0 0 22px; border-radius:50%; }
+  .rface img { width:22px; height:22px; border-radius:50%; display:block; background:var(--panel2); object-fit:cover; }
+  .rface.speaking { box-shadow:0 0 0 2px var(--good), 0 0 7px var(--good); animation:rfacepulse 1.6s ease-in-out infinite; }
+  @keyframes rfacepulse { 0%,100% { box-shadow:0 0 0 2px var(--good),0 0 7px var(--good); } 50% { box-shadow:0 0 0 2px var(--good),0 0 2px var(--good); } }
+  /* state badges in the avatar corner */
+  .rbadge { position:absolute; width:11px; height:11px; border-radius:50%; background:var(--panel); display:flex;
+            align-items:center; justify-content:center; box-shadow:0 0 0 1.5px var(--panel); }
+  .rbadge .lu { width:8px; height:8px; }
+  .rbadge.mut { bottom:-2px; right:-2px; color:var(--mut); }
+  .rbadge.bad { bottom:-2px; right:-2px; color:var(--bad); }
+  .rbadge.vid { top:-2px; right:-2px; color:var(--accent); }
+  /* streaming icon next to the face (counts toward the width math) */
+  .rstream { flex:0 0 auto; display:inline-flex; align-items:center; color:var(--accent); }
+  .rstream .lu { width:14px; height:14px; }
+  .rmore { font-size:10px; color:var(--mut); flex:0 0 auto; padding:0 3px; font-weight:600; }
   .tcol-body { padding:10px; overflow-y:auto; flex:1; min-height:0; display:flex; flex-direction:column; gap:8px; }
   .tline .ts { color:var(--mut); font-size:11px; font-variant-numeric:tabular-nums; margin-right:6px; }
   .tcol-h .cnt { margin-left:auto; }

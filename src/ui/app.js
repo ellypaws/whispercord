@@ -39,7 +39,21 @@ function emojiAvatar(src) {   // render the per-source emoji as a round avatar (
 }
 const DEFAULT_AV_GRAY = "https://cdn.discordapp.com/embed/avatars/1.png";   // Discord's gray default avatar
 const badAvatars = new Set();   // real avatar URLs that failed to load -> fall back to the emoji avatar
-const rosters = {};   // client -> [{userId,name,avatar,stream}]  (the call's members, for the picker)
+const rosters = {};   // client -> [{userId,name,avatar,stream,mute,deaf,video}]  (the call's members)
+const speakSeen = {}; // client -> Map(userId -> last time seen speaking)  (drives the green ring)
+const SPEAK_HOLD = 900;   // ms to hold the ring after last seen speaking (smooths indicator flicker)
+const EMPTY_SET = new Set();
+function noteSpeaking(client, ids) {
+  const m = speakSeen[client] || (speakSeen[client] = new Map());
+  const now = Date.now();
+  for (const uid of (ids || [])) m.set(uid, now);
+}
+function currentSpeaking(client) {
+  const m = speakSeen[client]; if (!m) return EMPTY_SET;
+  const now = Date.now(); const set = new Set();
+  for (const [uid, t] of m) if (now - t < SPEAK_HOLD) set.add(uid);
+  return set;
+}
 const sources = {};   // src -> {client,name,avatar,resolved,locked,kind,ts}  (live speakers seen)
 
 // ---------- inline Lucide icons (offline; 24x24 stroke) ----------
@@ -596,7 +610,7 @@ function connectRelay() {
     let m; try { m = JSON.parse(ev.data); } catch (e) { return; }
     if (m.type === "status") {
       $("activepill").textContent = (m.active || 0) + " stream" + (m.active === 1 ? "" : "s");
-      if (m.clients) { engineStatus = m.clients; renderClients(); updateSpeaking(m.clients); }
+      if (m.clients) { engineStatus = m.clients; renderClients(); }
     } else if (m.type === "transcript") {
       trackSource(m);
       renderTranscript(m);
@@ -607,6 +621,9 @@ function connectRelay() {
       applyRename(m);
     } else if (m.type === "roster") {
       rosters[m.client] = m.members || [];
+      renderColumnRoster(panelFor(m.client));  // ensure the column exists so the faces can show
+    } else if (m.type === "speaking") {
+      noteSpeaking(m.client, m.ids);           // the 250ms ticker repaints; hold smooths flicker
     }
   };
 }
@@ -633,17 +650,18 @@ function panelFor(client) {
   const dot = document.createElement("span"); dot.className = "cdot";
   dot.style.background = CLIENT_COLORS[key] || "#5865f2";
   const title = document.createElement("span"); title.textContent = clientLabel(client);
-  const spk = document.createElement("span"); spk.className = "cspk";   // live "N speaking" for THIS client
+  const rosterHead = document.createElement("span"); rosterHead.className = "tcol-roster";   // faces inline
   const cnt = document.createElement("span"); cnt.className = "cnt"; cnt.textContent = "0";
   const flip = document.createElement("span"); flip.className = "tcol-flip"; flip.innerHTML = icon("arrow-up-down");
   const clr = document.createElement("span"); clr.className = "tcol-clear"; clr.textContent = "clear";
   clr.title = "Clear this client's transcript";
-  head.appendChild(dot); head.appendChild(title); head.appendChild(spk); head.appendChild(cnt); head.appendChild(flip); head.appendChild(clr);
+  head.appendChild(dot); head.appendChild(title); head.appendChild(rosterHead); head.appendChild(cnt); head.appendChild(flip); head.appendChild(clr);
 
   const body = document.createElement("div"); body.className = "tcol-body";
   const jump = document.createElement("button"); jump.className = "jump"; jump.textContent = jumpLabel(newestTop());
+  const rosterBottom = document.createElement("div"); rosterBottom.className = "tcol-roster bottom"; rosterBottom.style.display = "none";
 
-  col.appendChild(head); col.appendChild(body); col.appendChild(jump);
+  col.appendChild(head); col.appendChild(body); col.appendChild(rosterBottom); col.appendChild(jump);
   // keep columns ordered by label for stable layout
   const cols = Array.from(box.children);
   const after = cols.find((c) => c._label && c._label > clientLabel(client));
@@ -652,7 +670,10 @@ function panelFor(client) {
 
   // "pinned" = scrolled to the newest end (top when newestTop, else bottom). Direction is per-panel,
   // seeded from the global default and flippable on the card itself.
-  const p = { col, body, jump, cnt, spk, flipBtn: flip, newestTop: newestTop(), pinned: true, n: 0, cur: {}, lastAuto: 0, jt: null };
+  const p = { col, body, jump, cnt, client: key, rosterHead, rosterBottom, flipBtn: flip,
+              newestTop: newestTop(), pinned: true, n: 0, cur: {}, lastAuto: 0, jt: null };
+  // recompute the face row when the column is resized (responsive header-vs-bottom + fit)
+  try { p.ro = new ResizeObserver(() => renderColumnRoster(p)); p.ro.observe(col); } catch (e) {}
   flip.title = flipTitle(p.newestTop);
   flip.onclick = () => flipPanel(p);
   clr.onclick = () => { body.innerHTML = ""; p.cur = {}; p.n = 0; cnt.textContent = "0"; };
@@ -682,15 +703,74 @@ function pinScroll(p) {
 function capLines(p) {                       // drop the OLDEST rows (opposite end from newest)
   while (p.body.children.length > 200) p.body.removeChild(p.newestTop ? p.body.lastChild : p.body.firstChild);
 }
-// per-client live "N speaking" badge - each pane shows ONLY its own client's active streams
-// (iterate panels, not the heartbeat, so a client that goes quiet/absent clears its own badge)
-function updateSpeaking(clients) {
-  for (const key in panels) {
-    const p = panels[key];
-    if (!p || !p.spk) continue;
-    const a = (clients[key] && clients[key].active) || 0;
-    p.spk.textContent = a ? a + " speaking" : "";
+// ---- per-column roster faces (green ring on whoever's speaking, replaces "N speaking") ----
+const RFACE_SLOT = 26;   // avatar (22px) + gap (4px)
+const RFACE_W = 22, RGAP = 4, RSTREAM_W = 16, RMORE_W = 30;   // px used in the width/fit math
+const memberW = (m) => RFACE_W + RGAP + (m.stream ? RSTREAM_W + RGAP : 0);   // a streaming member is wider
+function rosterFace(m, speaking) {
+  const f = document.createElement("span");
+  f.className = "rface" + (speaking.has(m.userId) ? " speaking" : "");
+  f.title = m.name || "user";
+  const img = document.createElement("img");
+  img.src = m.avatar || DEFAULT_AV_GRAY;
+  img.onerror = () => { img.src = DEFAULT_AV_GRAY; };
+  f.appendChild(img);
+  // state badges in the avatar's corner (no extra width): deaf > mute, plus video
+  if (m.deaf) f.appendChild(badge("volume-x", "bad"));
+  else if (m.mute) f.appendChild(badge("mic-off", "mut"));
+  if (m.video) f.appendChild(badge("video", "vid"));
+  return f;
+}
+function badge(name, cls) { const b = document.createElement("span"); b.className = "rbadge " + cls; b.innerHTML = icon(name); return b; }
+function paintFaces(host, list, speaking, moreCount) {
+  host.innerHTML = "";
+  for (const m of list) {
+    host.appendChild(rosterFace(m, speaking));
+    if (m.stream) {                              // stream icon sits next to the face (counts toward width)
+      const s = document.createElement("span"); s.className = "rstream"; s.title = (m.name || "user") + " is streaming";
+      s.innerHTML = icon("screen-share"); host.appendChild(s);
+    }
   }
+  if (moreCount > 0) {
+    const more = document.createElement("span"); more.className = "rmore"; more.textContent = "+" + moreCount;
+    more.title = moreCount + " more in the call"; host.appendChild(more);
+  }
+}
+function fitCount(width, list, reserve) {        // greedily fit by actual member widths
+  let used = 0, n = 0;
+  for (const m of list) { used += memberW(m); if (used > width - reserve) break; n++; }
+  return Math.max(1, n);
+}
+const totalW = (list) => list.reduce((s, m) => s + memberW(m), 0);
+// the call's members as faces: inline in the header while they fit, else a full-width strip at the
+// bottom; speakers stay visible (a hidden speaker bumps a quiet one) with the rest collapsed to "+N".
+function renderColumnRoster(p) {
+  if (!p) return;
+  const members = (rosters[p.client] || []).slice().sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")));
+  const speaking = currentSpeaking(p.client);
+  let host, list, more = 0;
+  if (!members.length) {
+    host = p.rosterHead; list = [];
+  } else if (totalW(members) <= (p.rosterHead.clientWidth || 0)) {
+    host = p.rosterHead; list = members;          // all fit inline in the header
+  } else {
+    host = p.rosterBottom;                         // too long -> full-width strip at the bottom
+    const botW = p.rosterBottom.clientWidth || (p.col.clientWidth - 20);
+    if (totalW(members) <= botW) { list = members; }
+    else {                                         // still overflowing: speakers first, then "+N"
+      const ordered = members.filter((m) => speaking.has(m.userId)).concat(members.filter((m) => !speaking.has(m.userId)));
+      const n = fitCount(botW, ordered, RMORE_W);
+      list = ordered.slice(0, n); more = members.length - n;
+    }
+  }
+  // skip the rebuild when nothing visible changed (avoids churn from the 250ms ticker)
+  const sig = host.className + "|" + more + "|" + list.map((m) =>
+    m.userId + (speaking.has(m.userId) ? "S" : "") + (m.mute ? "m" : "") + (m.deaf ? "d" : "") + (m.stream ? "x" : "") + (m.video ? "v" : "")).join(",");
+  if (p._rsig === sig) return;
+  p._rsig = sig;
+  if (host === p.rosterHead) { p.rosterBottom.style.display = "none"; p.rosterBottom.innerHTML = ""; }
+  else { p.rosterBottom.style.display = "flex"; p.rosterHead.innerHTML = ""; }
+  paintFaces(host, list, speaking, more);
 }
 // the global "Newest on top" setting resets every panel to that direction (per-card flips override until then)
 function applyDirection() {
@@ -920,6 +1000,7 @@ async function boot() {
   $("updatebar-btn").innerHTML = icon("download") + "Update";
   setInterval(refreshEngine, 3000);
   setInterval(renderSpeakers, 1500);
+  setInterval(() => { for (const k in panels) renderColumnRoster(panels[k]); }, 250);  // ring updates + hold
   document.addEventListener("click", closeAssign);
   window.addEventListener("resize", closeAssign);
   checkUpdate();
