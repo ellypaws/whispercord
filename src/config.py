@@ -6,7 +6,7 @@ DEFAULTS = {
     "whisper_model": "small",
     "language": "",                     # "" = auto-detect; e.g. "en", "ja"
     "beam_size": 1,                     # 1 = greedy (fastest); higher = more accurate
-    "device": "cuda",                   # cuda | cpu
+    "device": "auto",                   # auto | cuda | hip | vulkan | cpu  (auto detects best)
     "compute_type": "float16",          # float16 (gpu) | int8_float16 | int8 (cpu)
     "inject_overlay": True,             # also show subtitles inside Discord (via CDP)
     "relay_port": 8765,

@@ -48,6 +48,8 @@ from faster_whisper import WhisperModel
 
 import paths
 import models as model_store
+import gpu_detect                    # device routing (auto|cuda|hip|vulkan|cpu)
+import backends                      # transcription backend seam (CTranslate2 today)
 from config import load as _load_config
 from locate import locate_rva       # runtime RVA auto-locator (survives Discord updates)
 CFG = _load_config()
@@ -882,26 +884,22 @@ def mapping_thread():
 def main():
     global DEVICE, COMPUTE
     load_user_cache()
+    # Resolve the configured device against real hardware: auto|cuda|hip|vulkan|cpu -> a concrete
+    # backend. CUDA is NVIDIA-only, so device=cuda (or auto) on a non-NVIDIA box becomes cpu;
+    # hip/vulkan degrade to cpu until the whisper.cpp backend ships.
+    DEVICE = gpu_detect.resolve(DEVICE, print)
+    if DEVICE != "cuda" and COMPUTE in ("float16", "int8_float16"):   # GPU-only -> CPU-safe default
+        COMPUTE = "int8"
     if DEVICE == "cuda":
-        from cuda_setup import nvidia_gpu_present, ensure_cuda, cuda_present
-        if not nvidia_gpu_present():
-            # CUDA is NVIDIA-only (CTranslate2 has no AMD/Intel backend). Don't pull the ~1 GB
-            # NVIDIA runtime onto a machine that can't use it — fall back to CPU instead.
-            print("[gpu] device=cuda but no NVIDIA GPU detected (CUDA is NVIDIA-only; "
-                  "AMD/Intel GPUs are not supported) - using CPU")
-            emit_progress("cuda", "No NVIDIA GPU - using CPU")
-            DEVICE = "cpu"
-            if COMPUTE in ("float16", "int8_float16"):   # GPU-only compute types -> CPU-safe default
-                COMPUTE = "int8"
-        else:
-            try:
-                if not cuda_present():
-                    print("[cuda] GPU runtime not found - downloading (~1 GB, first run only)...")
-                    emit_progress("cuda", "Downloading GPU runtime (first run, ~1 GB)", 0)
-                    ensure_cuda(print, on_progress=lambda pct, label: emit_progress("cuda", label, pct))
-                add_cuda_dlls()
-            except Exception as e:
-                print("[cuda] setup failed (%s) - GPU may not load" % e)
+        try:
+            from cuda_setup import ensure_cuda, cuda_present
+            if not cuda_present():
+                print("[cuda] GPU runtime not found - downloading (~1 GB, first run only)...")
+                emit_progress("cuda", "Downloading GPU runtime (first run, ~1 GB)", 0)
+                ensure_cuda(print, on_progress=lambda pct, label: emit_progress("cuda", label, pct))
+            add_cuda_dlls()
+        except Exception as e:
+            print("[cuda] setup failed (%s) - GPU may not load" % e)
     print("[whisper] loading '%s' on %s (%s)..." % (MODEL, DEVICE, COMPUTE))
     # All models live in one app-owned cache. A model already there is loaded with
     # local_files_only so it NEVER re-downloads (switching back and forth is free); only a
@@ -934,7 +932,9 @@ def main():
             model = _load("cpu", "int8", False)
         if model is None:
             raise
-    print("[whisper] ready (lang=%s, beam=%d)" % (LANGUAGE or "auto", BEAM))
+    backend = backends.CT2Backend(model, beam_size=BEAM, language=LANGUAGE,
+                                  use_vad=USE_VAD, no_speech_threshold=NO_SPEECH)
+    print("[whisper] ready (lang=%s, beam=%d, backend=ct2/%s)" % (LANGUAGE or "auto", BEAM, DEVICE))
     emit_progress("ready", "Engine ready", 100, done=True)
 
     threading.Thread(target=start_relay, daemon=True).start()
@@ -961,13 +961,7 @@ def main():
         level = rms_dbfs(audio)
         if level < GATE_DBFS:                          # too quiet to be speech -> skip the model
             return ""
-        segs, _ = model.transcribe(
-            audio, beam_size=BEAM, language=LANGUAGE,
-            vad_filter=USE_VAD,
-            vad_parameters={"min_silence_duration_ms": 300} if USE_VAD else None,
-            no_speech_threshold=NO_SPEECH,
-            condition_on_previous_text=False,          # avoid repeat/hallucination loops
-        )
+        segs = backend.transcribe(audio)
         out = []
         for s in segs:
             txt = s.text.strip()

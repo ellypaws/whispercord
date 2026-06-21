@@ -236,7 +236,7 @@ function fillForm(c) {
   $("ui_newtop").checked = !!u.newest_at_top;
   $("adv_lang").value = c.language || "";
   $("adv_beam").value = c.beam_size ?? 1;
-  $("adv_device").value = c.device || "cuda";
+  $("adv_device").value = c.device || "auto";
   $("adv_compute").value = c.compute_type || "float16";
   $("adv_relay").value = c.relay_port ?? 8765;
   const s = c.self_transcribe || {};
