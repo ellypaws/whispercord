@@ -143,6 +143,19 @@ def _bind(lib):
     lib.whisper_full_get_token_p.argtypes = [p, C.c_int, C.c_int]
     lib.whisper_free.restype = None
     lib.whisper_free.argtypes = [p]
+    # Language auto-detection (optional — guarded so a DLL without these symbols still loads).
+    try:
+        lib.whisper_pcm_to_mel.restype = C.c_int
+        lib.whisper_pcm_to_mel.argtypes = [p, C.POINTER(C.c_float), C.c_int, C.c_int]
+        lib.whisper_lang_auto_detect.restype = C.c_int
+        lib.whisper_lang_auto_detect.argtypes = [p, C.c_int, C.c_int, C.POINTER(C.c_float)]
+        lib.whisper_lang_str.restype = C.c_char_p
+        lib.whisper_lang_str.argtypes = [C.c_int]
+        lib.whisper_lang_max_id.restype = C.c_int
+        lib.whisper_lang_max_id.argtypes = []
+        lib._has_lang_detect = True
+    except AttributeError:
+        lib._has_lang_detect = False
     return lib
 
 
@@ -176,6 +189,34 @@ class WhisperCpp:
             raise RuntimeError("whisper_init_from_file_with_params failed: %s" % model_path)
         self._n_threads = n_threads or max(1, (os.cpu_count() or 4) // 2)
         self._lang_buf = None        # keep the language bytes alive across the call
+        self._auto_lang = None       # cached auto-detected code when no language is configured
+
+    def _detect_language(self, a):
+        """Resolve a CONCRETE language code for whisper_full when none is configured. whisper.cpp
+        needs a non-NULL language: passing NULL transcribes on some GPUs but returns EMPTY on others
+        (observed on AMD RDNA4 Vulkan). Detect once via whisper_lang_auto_detect, cache the first
+        confident result (avoids re-encoding and language flicker on short interim chunks), and fall
+        back to 'en' rather than ever handing whisper_full a NULL language."""
+        if self._auto_lang:
+            return self._auto_lang
+        if not getattr(self._lib, "_has_lang_detect", False):
+            return "en"
+        try:
+            import numpy as np
+            a = np.ascontiguousarray(a, dtype=np.float32)
+            if self._lib.whisper_pcm_to_mel(
+                    self._ctx, a.ctypes.data_as(C.POINTER(C.c_float)), a.shape[0], self._n_threads) == 0:
+                maxid = self._lib.whisper_lang_max_id() + 1
+                probs = (C.c_float * maxid)()
+                lid = self._lib.whisper_lang_auto_detect(self._ctx, 0, self._n_threads, probs)
+                if 0 <= lid < maxid and probs[lid] >= 0.5:
+                    code = self._lib.whisper_lang_str(lid)
+                    if code:
+                        self._auto_lang = code.decode("utf-8", "replace")   # cache confident detections
+                        return self._auto_lang
+        except Exception:
+            pass
+        return self._auto_lang or "en"   # don't cache a low-confidence guess; retry next chunk
 
     def transcribe(self, audio_f32, language=None, beam_size=1, no_speech_threshold=0.6):
         import numpy as np
@@ -193,9 +234,13 @@ class WhisperCpp:
             p.greedy.best_of = 1
         else:
             p.beam_search.beam_size = int(beam_size)
-        self._lang_buf = language.encode("utf-8") if language else None
-        p.language = self._lang_buf            # None -> NULL -> auto-detect
-        p.detect_language = language is None
+        # No language given ("" or None) = auto-detect (parity with faster-whisper). whisper.cpp needs
+        # a CONCRETE language: a NULL pointer returns EMPTY segments on some GPUs (AMD RDNA4 Vulkan),
+        # and detect_language=True over NULL wedges whisper_full. So resolve a real code ourselves.
+        lang = language or self._detect_language(a)
+        self._lang_buf = lang.encode("utf-8") if lang else None
+        p.language = self._lang_buf
+        p.detect_language = False
         rc = self._lib.whisper_full(self._ctx, p, a.ctypes.data_as(C.POINTER(C.c_float)), a.shape[0])
         if rc != 0:
             raise RuntimeError("whisper_full failed rc=%d" % rc)

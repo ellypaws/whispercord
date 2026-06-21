@@ -136,10 +136,29 @@ function setAnyHl(el, text, terms) {
   }
   if (i < t.length) el.appendChild(document.createTextNode(t.slice(i)));
 }
+// Whisper sound events — [laughs], [LAUGHTER], (claps), *Nyuh*, ♪music♪ — rendered as highlighted
+// .sound spans; the speech around them still gets keyword/search highlighting.
+const SOUND_RE = /[\[(*♪][^\][()*♪]*[\])*♪]/g;
 function renderLineText(el, text) {
+  el.textContent = "";
   const terms = freeSearchTerms();
-  if (terms.length) setAnyHl(el, text, terms);
-  else setHl(el, text, matchKeyword(text));
+  const t = text || "";
+  const emitSpeech = (chunk) => {
+    if (!chunk) return;
+    const tmp = document.createElement("span");
+    if (terms.length) setAnyHl(tmp, chunk, terms);
+    else setHl(tmp, chunk, matchKeyword(chunk));
+    while (tmp.firstChild) el.appendChild(tmp.firstChild);
+  };
+  let i = 0, m; SOUND_RE.lastIndex = 0;
+  while ((m = SOUND_RE.exec(t)) !== null) {
+    if (m.index > i) emitSpeech(t.slice(i, m.index));
+    const s = document.createElement("span"); s.className = "sound"; s.textContent = m[0];
+    el.appendChild(s);
+    i = m.index + m[0].length;
+    if (m[0].length === 0) SOUND_RE.lastIndex++;
+  }
+  if (i < t.length) emitSpeech(t.slice(i));
 }
 // re-run highlighting over every transcript line after a keyword edit
 function rehighlightAll() {
@@ -759,6 +778,7 @@ function fillForm(c) {
   $("self_en").checked = !!s.enabled;
   $("self_unmute").checked = s.only_when_unmuted !== false;
   $("self_vad").checked = s.require_discord_speaking !== false;
+  $("self_ns").checked = s.noise_suppression !== false;
   $("self_device").value = s.device == null ? "" : String(s.device);
 }
 $("g_dbfs").addEventListener("input", () => $("g_dbfs_v").textContent = $("g_dbfs").value);
@@ -808,6 +828,7 @@ function readForm() {
       enabled: $("self_en").checked,
       only_when_unmuted: $("self_unmute").checked,
       require_discord_speaking: $("self_vad").checked,
+      noise_suppression: $("self_ns").checked,
       device: $("self_device").value === "" ? null
               : (/^\d+$/.test($("self_device").value) ? parseInt($("self_device").value, 10) : $("self_device").value),
     }),
@@ -882,7 +903,7 @@ const LIVE_FIELDS = new Set([
   "ui_newtop", "ui_ts", "ui_tsfmt", "a_highlight",        // wrapper-only display prefs
   "ui_events",                                            // show voice events (engine emits live)
   "cap_screen",                                            // transcribe stream audio
-  "self_en", "self_unmute", "self_vad", "self_device",     // own-voice (incl. live device switch)
+  "self_en", "self_unmute", "self_vad", "self_ns", "self_device",  // own-voice (incl. live device switch)
   "g_dbfs", "g_vad", "g_reqspeak", "g_drop",               // silence gating
   "g_uncensor",                                            // restore self-bleeped profanity
   "adv_lang", "adv_beam",                                  // language + beam size
@@ -1683,6 +1704,7 @@ const HELP = {
   self_en: "**Transcribe your own microphone** in addition to everyone else's audio. Uses your mic, gated by Discord's own per-client mute/VAD state below.",
   self_unmute: "Only capture your mic while you are **unmuted in Discord** for that client. Off = transcribe even when self-muted.",
   self_vad: "Only capture your mic when **Discord's voice activity** says you're speaking for that client - avoids transcribing background room noise.",
+  self_ns: "**Noise suppression** for your mic. Discord cleans up what others hear, but our capture is raw - this denoises fan/keyboard/room noise before transcription. Applies live.",
   g_dbfs: "**Silence gate.** Audio quieter than this (in dBFS) is skipped before it ever reaches the model. Higher (e.g. -45) gates harder and kills phantom *\"Thank you.\"* on near-silence.",
   g_vad: "**Silero VAD** trims non-speech regions from each chunk before transcription - fewer hallucinations on noise.",
   g_reqspeak: "**End when not speaking.** Closes an utterance once Discord's per-user speaking indicator goes quiet (after a short grace), which stops screenshare/comfort-noise bleed from transcribing forever. If your speech is being split into too many lines, turn this off to segment purely by audio.",
@@ -1702,7 +1724,7 @@ const HELP = {
   o_fade: "Start fading older subtitles once this many are stacked.",
   o_minop: "Lowest opacity a faded subtitle reaches (0–1).",
   adv_beam: "**Beam size.** `1` = greedy & fastest. Higher = more accurate but slower.",
-  adv_device: "**cuda** runs on your NVIDIA GPU (fast). **cpu** works anywhere but is much slower.",
+  adv_device: "**auto** picks the best for your GPU. **cuda** = NVIDIA. **hip** = AMD (ROCm); **vulkan** = any AMD/Intel GPU (the reliable AMD fallback if hip won't load). **cpu** works anywhere but is much slower. Runtimes download on first Start.",
   adv_compute: "Numeric precision. `float16` is best on GPU; `int8`/`int8_float16` use less memory; `float32` is CPU-friendly.",
   adv_relay: "Local WebSocket port the overlay connects to. Change only if `8765` clashes with something.",
 };

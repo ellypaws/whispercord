@@ -101,6 +101,7 @@
     .vtl-ev b{color:#dbdee1;font-weight:600}
     .vtl-ev .vtl-t{margin-right:0}
     .vt-text mark,.vtl mark{background:${ALERT_COLOR};color:#fff;border-radius:3px;padding:0 2px}
+    .vt-text .vt-sound,.vtl .vt-sound{color:#9bb7ff;font-style:italic;opacity:.9}
     .vtl-n{cursor:default}
     .vt-assign{position:fixed;z-index:100000;width:240px;max-height:320px;overflow:auto;background:rgba(24,25,28,.98);
       border:1px solid rgba(255,255,255,.1);border-radius:10px;box-shadow:0 12px 32px rgba(0,0,0,.6);padding:6px;
@@ -140,19 +141,34 @@
     for (const k of KEYWORDS) { const re = kwRe(k); re.lastIndex = 0; if (re.test(t)) return k; }
     return null;
   };
+  // Whisper sound events ([laughs], [LAUGHTER], (claps), *Nyuh*, ♪music♪) -> .vt-sound spans; the
+  // surrounding speech still gets keyword <mark>s.
+  const SOUND_RE = /[\[(*♪][^\][()*♪]*[\])*♪]/g;
   function setText(el, text, kw) {
     el.textContent = "";
     const t = text || "";
-    if (!kw) { el.textContent = t; return; }
-    const re = kwRe(kw); re.lastIndex = 0;
-    let i = 0, mch;
-    while ((mch = re.exec(t)) !== null) {
-      if (mch.index > i) el.appendChild(document.createTextNode(t.slice(i, mch.index)));
-      const m = document.createElement("mark"); m.textContent = mch[0]; el.appendChild(m);
-      i = mch.index + mch[0].length;
-      if (mch[0].length === 0) re.lastIndex++;
+    const re = kw ? kwRe(kw) : null;
+    const emitSpeech = (chunk) => {
+      if (!chunk) return;
+      if (!re) { el.appendChild(document.createTextNode(chunk)); return; }
+      re.lastIndex = 0; let i = 0, mch;
+      while ((mch = re.exec(chunk)) !== null) {
+        if (mch.index > i) el.appendChild(document.createTextNode(chunk.slice(i, mch.index)));
+        const m = document.createElement("mark"); m.textContent = mch[0]; el.appendChild(m);
+        i = mch.index + mch[0].length;
+        if (mch[0].length === 0) re.lastIndex++;
+      }
+      if (i < chunk.length) el.appendChild(document.createTextNode(chunk.slice(i)));
+    };
+    let i = 0, m; SOUND_RE.lastIndex = 0;
+    while ((m = SOUND_RE.exec(t)) !== null) {
+      if (m.index > i) emitSpeech(t.slice(i, m.index));
+      const s = document.createElement("span"); s.className = "vt-sound"; s.textContent = m[0];
+      el.appendChild(s);
+      i = m.index + m[0].length;
+      if (m[0].length === 0) SOUND_RE.lastIndex++;
     }
-    if (i < t.length) el.appendChild(document.createTextNode(t.slice(i)));
+    if (i < t.length) emitSpeech(t.slice(i));
   }
   function beep() {
     if (!ALERT_SOUND) return;

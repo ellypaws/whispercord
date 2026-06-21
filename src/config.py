@@ -50,6 +50,7 @@ DEFAULTS = {
         "enabled": False,
         "only_when_unmuted": True,      # skip while self-muted in Discord
         "require_discord_speaking": True,  # only when Discord's VAD says you're speaking (not just our gate)
+        "noise_suppression": True,      # denoise the raw mic (Discord's own NS isn't applied to our capture)
         "device": None,                 # input device index/name, or None = system default
         "clients": {},                  # per-client {exe: bool}; absent = on when enabled
     },

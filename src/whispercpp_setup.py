@@ -69,8 +69,21 @@ def _find_dll(d):
     return hits[0] if hits else None
 
 
+def _hip_complete(dll):
+    """A HIP bundle is useless without the ROCm BLAS DLLs ggml-hip/rocblas link (libhipblas.dll,
+    libhipblaslt.dll). Early bundles shipped whisper.dll but not these, so they'd never re-download.
+    Treat such a bundle as incomplete so a fixed artifact is re-fetched automatically."""
+    folder = os.path.dirname(dll)
+    return all(os.path.exists(os.path.join(folder, n)) for n in ("libhipblas.dll", "libhipblaslt.dll"))
+
+
 def lib_ready(backend, gfx=None):
-    return _find_dll(_lib_dir(backend, gfx)) is not None
+    dll = _find_dll(_lib_dir(backend, gfx))
+    if not dll:
+        return False
+    if backend == "hip" and not _hip_complete(dll):
+        return False
+    return True
 
 
 def ensure_lib(backend, gfx=None, log=print, on_progress=None):
@@ -78,6 +91,9 @@ def ensure_lib(backend, gfx=None, log=print, on_progress=None):
     registers its folder so dependent ggml*.dll load. Raises if the artifact can't be obtained."""
     d = _lib_dir(backend, gfx)
     dll = _find_dll(d)
+    if dll and backend == "hip" and not _hip_complete(dll):
+        log("[wcpp] hip bundle in %s is missing ROCm BLAS DLLs - re-downloading" % d)
+        dll = None
     if not dll:
         url = _asset_url(backend, gfx)
         fn = url.rsplit("/", 1)[-1]

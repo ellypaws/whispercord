@@ -124,21 +124,32 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force pkg | Out-Null
           Get-ChildItem -Recurse build -Include *.dll | Copy-Item -Destination pkg -Force
-          # ROCm runtime DLLs ggml-hip links: amdhip64 (also in the AMD driver) + hipblas -> rocblas.
-          foreach ($d in "amdhip64*.dll","hipblas.dll","rocblas.dll") {
+          # ROCm runtime DLLs the built binaries link. ROCm 7 (TheRock) renamed the BLAS libs with a
+          # `lib` prefix — ggml-hip imports libhipblas.dll and rocblas imports libhipblaslt.dll — so
+          # the old plain `hipblas.dll`/`rocblas.dll` names are NOT enough (libhipblas* matches both
+          # libhipblas.dll and libhipblaslt.dll). amd_comgr is amdhip64's code-object loader.
+          foreach ($d in "amdhip64*.dll","amd_comgr*.dll","hipblas*.dll","libhipblas*.dll","rocblas*.dll","librocblas*.dll") {
             Get-ChildItem -Path C:\opt\rocm -Recurse -Filter $d -ErrorAction SilentlyContinue | Copy-Item -Destination pkg -Force
           }
-          # rocBLAS Tensile kernel library — REQUIRED at runtime (ggml-hip -> hipblas -> rocblas);
-          # without it rocBLAS aborts on the first GEMM. Bundle it as rocblas/library so rocBLAS finds
-          # it next to rocblas.dll (the loader also sets ROCBLAS_TENSILE_LIBPATH).
-          $lib = Get-ChildItem -Path C:\opt\rocm -Recurse -Directory -ErrorAction SilentlyContinue |
-                 Where-Object { $_.Name -eq 'library' -and $_.FullName -match 'rocblas' } | Select-Object -First 1
-          if ($lib) {
-            New-Item -ItemType Directory -Force pkg\rocblas\library | Out-Null
-            Copy-Item "$($lib.FullName)\*" pkg\rocblas\library\ -Recurse -Force
-            "{0:N0} MB Tensile library bundled from $($lib.FullName)" -f ((Get-ChildItem pkg\rocblas\library -Recurse -File | Measure-Object Length -Sum).Sum/1MB) | Write-Host
-          } else { Write-Warning "rocBLAS Tensile library NOT found - HIP will fail at runtime on AMD" }
+          # rocBLAS / hipBLASLt Tensile kernel libraries — REQUIRED at runtime (ggml-hip -> hipblas ->
+          # rocblas/hipblaslt); without them the BLAS lib aborts on the first GEMM. Bundle each next to
+          # its DLL as <name>/library (rocBLAS also reads ROCBLAS_TENSILE_LIBPATH, set by the loader).
+          foreach ($n in "rocblas","hipblaslt") {
+            $lib = Get-ChildItem -Path C:\opt\rocm -Recurse -Directory -ErrorAction SilentlyContinue |
+                   Where-Object { $_.Name -eq 'library' -and $_.FullName -match $n } | Select-Object -First 1
+            if ($lib) {
+              New-Item -ItemType Directory -Force "pkg\$n\library" | Out-Null
+              Copy-Item "$($lib.FullName)\*" "pkg\$n\library\" -Recurse -Force
+              "{0:N0} MB $n Tensile library bundled from $($lib.FullName)" -f ((Get-ChildItem "pkg\$n\library" -Recurse -File | Measure-Object Length -Sum).Sum/1MB) | Write-Host
+            } else { Write-Warning "$n Tensile library NOT found - HIP may fail at runtime on AMD" }
+          }
           if (-not (Test-Path pkg\whisper.dll)) { throw "whisper.dll not produced" }
+          # Guard against shipping a bundle that can't load: ggml-hip needs libhipblas.dll and rocblas
+          # needs libhipblaslt.dll. If they're absent the artifact loads nowhere — fail the build now.
+          foreach ($req in "libhipblas.dll","libhipblaslt.dll") {
+            if (-not (Test-Path "pkg\$req")) { throw "$req missing from HIP bundle - would fail to load on target; check ROCm DLL names" }
+          }
+          Write-Host "bundled DLLs:"; Get-ChildItem pkg -Filter *.dll | ForEach-Object { Write-Host "  $($_.Name)" }
           Compress-Archive -Path pkg\* -DestinationPath "whispercpp-hip-${{ matrix.gfx }}-x64.zip" -Force
       - uses: actions/upload-artifact@v4
         with:

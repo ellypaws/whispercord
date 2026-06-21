@@ -108,6 +108,48 @@ def _norm(s):
     return s.lower().strip().strip(".!?,…\"' ").strip()
 DROP = set(_norm(p) for p in GATE["drop_phrases"])
 
+# Whisper emits non-speech markers in brackets. Pure-silence ones ([BLANK_AUDIO], [ Silence ],
+# (inaudible)) carry no content -> drop them like an empty result (whisper.cpp/Vulkan emits
+# [BLANK_AUDIO] where CT2 stays silent). Genuine sound events ([laughs], [LAUGHTER], (claps),
+# *Nyuh*, ♪music♪) are kept verbatim; the UI highlights them.
+_BLANK_RE = re.compile(
+    r"^[\[\(\*♪\s]*(?:blank[\s_]*audio|silence|silent|inaudible|no[\s_]*speech|pause|"
+    r"background[\s_]*noise)[\s_]*[\]\)\*♪.]*$", re.I)
+def _is_blank_marker(t):
+    return bool(_BLANK_RE.match(t or ""))
+
+
+def suppress_noise(x):
+    """Lightweight stationary spectral-subtraction denoiser for own-mic audio. Discord applies its
+    own noise suppression to the streams we hook from others, but our raw mic capture has none, so
+    fan/keyboard/room noise leaks into self-transcription. Estimate a per-bin noise floor from the
+    utterance's quietest frames and gently subtract it. numpy-only; conservative over-subtraction +
+    a spectral floor avoid the musical-noise artifacts that would otherwise confuse the model."""
+    x = np.ascontiguousarray(x, dtype=np.float32)
+    n_fft, hop = 512, 128
+    if x.size < n_fft * 3:
+        return x
+    win = np.hanning(n_fft).astype(np.float32)
+    nf = 1 + (x.size - n_fft) // hop
+    idx = np.arange(n_fft)[None, :] + hop * np.arange(nf)[:, None]
+    frames = x[idx] * win
+    S = np.fft.rfft(frames, axis=1)
+    mag, phase = np.abs(S), np.angle(S)
+    noise = np.percentile(mag, 25, axis=0)          # quiet-frame floor per frequency bin
+    clean = mag - 1.5 * noise[None, :]              # gentle over-subtraction
+    clean = np.maximum(clean, 0.15 * mag)           # spectral floor: keep speech, suppress musical noise
+    rec = np.fft.irfft(clean * np.exp(1j * phase), n=n_fft, axis=1).astype(np.float32) * win
+    out = np.zeros(x.size, dtype=np.float32)
+    wsum = np.zeros(x.size, dtype=np.float32)
+    for i in range(nf):
+        s = i * hop
+        out[s:s + n_fft] += rec[i]
+        wsum[s:s + n_fft] += win * win
+    nz = wsum > 1e-6
+    out[nz] /= wsum[nz]
+    out[~nz] = x[~nz]
+    return out
+
 # --- uncensor: undo Whisper's self-bleeping ---------------------------------
 # Whisper is trained on caption/subtitle data that bleeps profanity, so it sometimes emits the
 # masked form ("f*****g", "sh*t"). When `uncensor` is on we map those masked tokens back to the
@@ -1121,8 +1163,10 @@ def main():
         audio = np.frombuffer(bytes(tail), dtype=np.int16).astype(np.float32) / 32768.0
         return rms_dbfs(audio) >= GATE_DBFS
 
-    def transcribe(b):
+    def transcribe(b, denoise=False):
         audio = np.frombuffer(bytes(b), dtype=np.int16).astype(np.float32) / 32768.0
+        if denoise and audio.size:                     # own-mic noise suppression (raw mic, no Discord NS)
+            audio = suppress_noise(audio)
         level = rms_dbfs(audio)
         if level < GATE_DBFS:                          # too quiet to be speech -> skip the model
             return ""
@@ -1130,7 +1174,7 @@ def main():
         out = []
         for s in segs:
             txt = s.text.strip()
-            if not txt:
+            if not txt or _is_blank_marker(txt):       # silence/blank-audio marker -> nothing (like "...")
                 continue
             if UNCENSOR:
                 txt = uncensor_text(txt)
@@ -1232,11 +1276,13 @@ def main():
             if kind == "start":
                 emit(src, "", False)
             elif kind == "interim":
-                t = transcribe(b)
+                denoise = src.startswith("self:") and bool(SELF.get("noise_suppression", True))
+                t = transcribe(b, denoise=denoise)
                 if t:
                     emit(src, t, False)
             elif kind == "final":
-                t = transcribe(b)
+                denoise = src.startswith("self:") and bool(SELF.get("noise_suppression", True))
+                t = transcribe(b, denoise=denoise)
                 if t:
                     print("  [%s] %s" % (display_name(src, (src2user.get(src) or {}).get("name")), t))
                     emit(src, t, True)

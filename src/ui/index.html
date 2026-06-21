@@ -290,6 +290,7 @@
   /* event icons + keyword highlight in the desktop transcript */
   .tevent .lu { width:14px; height:14px; vertical-align:-2px; }
   .tline .txt mark { background:var(--alert,#f04747); color:#fff; border-radius:3px; padding:0 2px; }
+  .tline .txt .sound { color:var(--acc,#5865f2); font-style:italic; font-size:0.92em; opacity:0.92; }
 </style>
 </head>
 <body>
@@ -406,6 +407,8 @@
         <label class="switch"><input type="checkbox" id="self_unmute" /><span class="sl"></span></label></div>
       <div class="row"><label>Only when Discord says I'm speaking</label>
         <label class="switch"><input type="checkbox" id="self_vad" /><span class="sl"></span></label></div>
+      <div class="row"><label>Noise suppression</label>
+        <label class="switch"><input type="checkbox" id="self_ns" /><span class="sl"></span></label></div>
       <div class="row"><label>Input device</label>
         <select id="self_device"><option value="">System default</option></select></div>
       <div class="subhead">Apply to clients</div>
@@ -471,7 +474,7 @@
       <summary>Advanced</summary>
       <div class="row"><label>Beam size</label><input type="number" id="adv_beam" min="1" max="10" /></div>
       <div class="row"><label>Device</label>
-        <select id="adv_device"><option value="auto">auto (detect)</option><option value="cuda">cuda (NVIDIA GPU)</option><option value="cpu">cpu</option></select></div>
+        <select id="adv_device"><option value="auto">auto (detect)</option><option value="cuda">cuda (NVIDIA GPU)</option><option value="hip">hip (AMD ROCm)</option><option value="vulkan">vulkan (AMD/Intel GPU)</option><option value="cpu">cpu</option></select></div>
       <div class="row"><label>Compute type</label>
         <select id="adv_compute"><option>float16</option><option>int8_float16</option><option>int8</option><option>float32</option></select></div>
       <div class="row"><label>Relay port</label><input type="number" id="adv_relay" /></div>
