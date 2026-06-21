@@ -762,7 +762,11 @@ function fillForm(c) {
   $("o_max").value = o.max_blocks ?? 6;
   $("o_fade").value = o.fade_start_count ?? 5;
   $("o_minop").value = o.min_fade_opacity ?? 0.25;
+  $("o_subs").checked = o.show_subtitles !== false;
+  $("o_log").checked = o.show_log !== false;
+  $("o_status").checked = o.show_status !== false;
   $("o_shrink").checked = o.shrink_quiet_subtitles === true;
+  $("o_logw").value = o.log_width ?? 360;
   $("o_logh").value = o.log_height ?? 300;
   $("ui_events").checked = c.voice_events !== false;
   const u = c.ui || {};
@@ -816,7 +820,11 @@ function readForm() {
       max_blocks: parseInt($("o_max").value, 10),
       fade_start_count: parseInt($("o_fade").value, 10),
       min_fade_opacity: parseFloat($("o_minop").value),
+      show_subtitles: $("o_subs").checked,
+      show_log: $("o_log").checked,
+      show_status: $("o_status").checked,
       shrink_quiet_subtitles: $("o_shrink").checked,
+      log_width: parseInt($("o_logw").value, 10) || 360,
       log_height: parseInt($("o_logh").value, 10) || 300,
     }),
     ui: Object.assign({}, CFG.ui, {
@@ -909,7 +917,7 @@ const LIVE_FIELDS = new Set([
   "adv_lang", "adv_beam",                                  // language + beam size
 ]);
 // overlay-only settings: applied by re-injecting the overlay into Discord, NOT by an engine restart
-const OVERLAY_FIELDS = new Set(["o_timeout", "o_max", "o_fade", "o_minop", "o_shrink", "o_logh", "a_sound"]);
+const OVERLAY_FIELDS = new Set(["o_timeout", "o_max", "o_fade", "o_minop", "o_subs", "o_log", "o_status", "o_shrink", "o_logw", "o_logh", "a_sound"]);
 function markRestartNeeded() { if (engineRunning) $("restartbar").style.display = "flex"; }
 function clearRestartNeeded() { $("restartbar").style.display = "none"; }
 function markOverlayNeeded() { if (engineRunning) $("overlaybar").style.display = "flex"; }
@@ -1004,7 +1012,7 @@ function renderReminders() {
     const grow = document.createElement("span"); grow.className = "grow";
     row.append(tx, grow);
     if (r.fix) {
-      const fix = document.createElement("button"); fix.className = "sec"; fix.textContent = "Restart w/ port";
+      const fix = document.createElement("button"); fix.className = "sec glow"; fix.textContent = "Restart w/ port";
       fix.onclick = async () => { fix.disabled = true; fix.textContent = "…"; try { await API.ensure_client(r.folder, true); } catch (e) {} setTimeout(refreshClients, 1500); };
       row.append(fix);
     }
@@ -1048,6 +1056,7 @@ function renderClients() {
       btn.textContent = "Ready"; btn.disabled = true;
     } else {
       btn.textContent = c.running ? "Restart w/ port" : "Launch";
+      if (c.running && !c.live) btn.classList.add("glow");   // CTA nudge: this is the one action that turns on names
       btn.onclick = async () => {
         btn.disabled = true; btn.textContent = "…";
         await API.ensure_client(c.folder, c.running && !c.live);
@@ -1713,11 +1722,28 @@ const HELP = {
   kw: "**Keyword alerts.** Words that get **highlighted** + a beep when spoken (e.g. your name). Editing these re-highlights the existing transcript live.",
   a_sound: "Play a short **beep** when a keyword is detected.",
   a_highlight: "**Highlight color** used to mark keyword hits in the transcript and overlay.",
-  ui_events: "Show **voice events** (join/leave, mute, deafen, camera, stream) in the transcript and overlay, with icons.",
+  ui_events: { md: "Show **voice events** (join/leave, mute, deafen, camera, stream) in the transcript and overlay, with icons.",
+    preview: '<div style="font:12px sans-serif;color:#949ba4">'
+      + '<div style="display:flex;align-items:center;gap:7px;opacity:.78;margin:3px 0"><span style="color:#23a55a;font-weight:700">↪</span><b style="color:#c4c9d0">Elly</b> joined the channel</div>'
+      + '<div style="display:flex;align-items:center;gap:7px;opacity:.78;margin:3px 0"><span style="color:#949ba4">✕</span><b style="color:#c4c9d0">Sam</b> muted</div>'
+      + '<div style="display:flex;align-items:center;gap:7px;opacity:.78;margin:3px 0"><span style="color:#5865f2">▣</span><b style="color:#c4c9d0">Von</b> started streaming</div></div>' },
   ui_newtop: "**Newest on top.** Off = newest lines at the bottom (classic chat). On = newest pops in at the top.",
   ui_ts: "Show a **timestamp** on each transcript line.",
   ui_tsfmt: "Timestamp style: **clock** (`14:03:22`) or **relative** (`12s ago`).",
+  o_subs: { md: "**Show subtitles.** The live caption bubbles at the bottom of the Discord window. Turn off to keep only the transcript log.",
+    preview: '<div style="background:rgba(0,0,0,.82);border-radius:10px;padding:6px 10px;display:flex;align-items:center;gap:8px;font:13px/1.3 sans-serif;color:#fff">'
+      + '<span style="width:18px;height:18px;border-radius:50%;background:#5865f2;flex:0 0 auto"></span>'
+      + '<span><b style="color:#7aa2ff;margin-right:5px">Elly</b>can you hear me <span style="color:#9bb7ff;font-style:italic">(laughs)</span><span style="color:#9bb7ff;margin-left:2px">▍</span></span></div>' },
+  o_log: { md: "**Show transcript log.** The scrollable transcript panel docked top-right in Discord. Turn off to keep only the subtitles.",
+    preview: '<div style="background:rgba(24,25,28,.95);border:1px solid rgba(255,255,255,.1);border-radius:8px;padding:6px 8px;font:12px/1.4 sans-serif;color:#e3e5e8;width:210px">'
+      + '<div style="font-weight:600;font-size:11px;color:#b5bac1;margin-bottom:4px">Transcript</div>'
+      + '<div style="display:flex;gap:6px;margin:3px 0;align-items:flex-start"><span style="width:14px;height:14px;border-radius:50%;background:#23a55a;flex:0 0 auto;margin-top:1px"></span><span><b style="color:#7aa2ff">Elly:</b> sounds good to me</span></div>'
+      + '<div style="display:flex;gap:6px;margin:3px 0;align-items:flex-start"><span style="width:14px;height:14px;border-radius:50%;background:#f0b232;flex:0 0 auto;margin-top:1px"></span><span><b style="color:#ffcf7a">Sam:</b> let\'s ship it</span></div></div>' },
+  o_status: { md: "**Show status pill.** The small \"Listening · N speaking\" connection indicator.",
+    preview: '<div style="display:inline-flex;align-items:center;gap:6px;background:rgba(24,25,28,.92);border:1px solid rgba(255,255,255,.1);border-radius:13px;padding:4px 11px;font:11px sans-serif;color:#e3e5e8">'
+      + '<span style="width:8px;height:8px;border-radius:50%;background:#23a55a;flex:0 0 auto"></span>Listening · 2 speaking</div>' },
   o_shrink: "**Shrink quiet subtitles.** Older subtitle blocks shrink after one second without new words; the current bottom subtitle stays full size.",
+  o_logw: "Width of the in-Discord transcript log panel, in pixels (also drag-resizable by the panel's bottom-right edge).",
   o_logh: "Height of the in-Discord transcript log panel, in pixels (also drag-resizable).",
   o_timeout: "How long a subtitle stays on screen **after speech stops**, in milliseconds.",
   o_max: "Maximum number of subtitle blocks shown on the overlay at once.",
@@ -1730,9 +1756,12 @@ const HELP = {
 };
 let helpPop = null;
 function closeHelp() { if (helpPop) { helpPop.remove(); helpPop = null; } }
-function openHelp(anchor, md) {
+function openHelp(anchor, help) {
   closeHelp();
-  const pop = document.createElement("div"); pop.className = "help-pop"; pop.innerHTML = mdToHtml(md);
+  const md = typeof help === "string" ? help : help.md;
+  const preview = typeof help === "object" && help ? help.preview : null;
+  const pop = document.createElement("div"); pop.className = "help-pop";
+  pop.innerHTML = mdToHtml(md) + (preview ? '<div class="help-preview">' + preview + "</div>" : "");
   pop.addEventListener("click", (e) => e.stopPropagation());
   document.body.appendChild(pop);
   const r = anchor.getBoundingClientRect();

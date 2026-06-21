@@ -31,6 +31,9 @@
            padding:7px 14px; cursor:pointer; font-weight:600; }
   button.sec { background:var(--panel2); color:var(--txt); }
   button.danger { background:var(--bad); }
+  button.glow { animation:ctaGlow 1.5s ease-in-out infinite; position:relative; }
+  @keyframes ctaGlow { 0%,100% { box-shadow:0 0 0 0 rgba(88,101,242,0); }
+                       50% { box-shadow:0 0 0 3px rgba(88,101,242,.35), 0 0 12px rgba(88,101,242,.55); } }
   button:disabled { opacity:.5; cursor:default; }
   .tabs { display:flex; align-items:center; gap:4px; padding:8px 14px 0; background:var(--panel); flex:0 0 auto; }
   .tab { padding:7px 14px; cursor:pointer; color:var(--mut); border-bottom:2px solid transparent; font-weight:600; }
@@ -247,6 +250,8 @@
   .help-pop a { color:var(--accent); }
   .help-pop ul { margin:6px 0; padding-left:18px; } .help-pop li { margin:2px 0; }
   .help-pop p { margin:6px 0; } .help-pop strong { color:#fff; }
+  .help-preview { margin-top:8px; padding-top:8px; border-top:1px solid var(--line); }
+  .help-preview::before { content:"Preview"; display:block; font-size:10px; text-transform:uppercase; letter-spacing:.5px; color:var(--mut); margin-bottom:6px; }
   /* downloaded models list */
   .modelrow { display:flex; align-items:center; gap:10px; padding:7px 0; border-top:1px solid var(--line); }
   .modelrow:first-child { border-top:0; }
@@ -290,7 +295,7 @@
   /* event icons + keyword highlight in the desktop transcript */
   .tevent .lu { width:14px; height:14px; vertical-align:-2px; }
   .tline .txt mark { background:var(--alert,#f04747); color:#fff; border-radius:3px; padding:0 2px; }
-  .tline .txt .sound { color:var(--acc,#5865f2); font-style:italic; font-size:0.92em; opacity:0.92; }
+  .tline .txt .sound { color:var(--accent); font-style:italic; font-size:0.92em; opacity:0.92; }
 </style>
 </head>
 <body>
@@ -379,8 +384,15 @@
         <label class="switch"><input type="checkbox" id="ui_ts" /><span class="sl"></span></label></div>
       <div class="row"><label>Timestamp format</label>
         <select id="ui_tsfmt"><option value="clock">clock (14:03:22)</option><option value="relative">relative (12s ago)</option></select></div>
+      <div class="row"><label>Show subtitles</label>
+        <label class="switch"><input type="checkbox" id="o_subs" /><span class="sl"></span></label></div>
+      <div class="row"><label>Show transcript log</label>
+        <label class="switch"><input type="checkbox" id="o_log" /><span class="sl"></span></label></div>
+      <div class="row"><label>Show status pill</label>
+        <label class="switch"><input type="checkbox" id="o_status" /><span class="sl"></span></label></div>
       <div class="row"><label>Shrink quiet subtitles</label>
         <label class="switch"><input type="checkbox" id="o_shrink" /><span class="sl"></span></label></div>
+      <div class="row"><label>Overlay log width (px)</label><input type="number" id="o_logw" min="240" max="1200" /></div>
       <div class="row"><label>Overlay log height (px)</label><input type="number" id="o_logh" min="120" max="900" /></div>
     </div>
 

@@ -14,7 +14,11 @@
   const FADE_START = OV.fade_start_count || 5;
   const MIN_FADE = OV.min_fade_opacity != null ? OV.min_fade_opacity : 0.25;
   const SHRINK_QUIET = OV.shrink_quiet_subtitles === true;
+  const SHOW_SUBS = OV.show_subtitles !== false;     // bottom subtitle bubbles
+  const SHOW_LOG = OV.show_log !== false;            // top-right transcript log panel
+  const SHOW_STATUS = OV.show_status !== false;      // status pill
   const SHRINK_IDLE_MS = 1000;
+  const LOG_W = OV.log_width || 360;
   const LOG_H = OV.log_height || 300;
   const LOG_AUTOSCROLL = OV.log_autoscroll !== false;
   let KEYWORDS = (AL.keywords || []).map((k) => String(k).toLowerCase()).filter(Boolean);
@@ -72,6 +76,7 @@
       font-family:gg sans,sans-serif;font-size:11px;color:#e3e5e8;pointer-events:none}
 
     .vtlog{position:fixed;top:64px;right:12px;width:360px;z-index:99999;display:flex;flex-direction:column;
+      resize:horizontal;overflow:hidden;min-width:240px;max-width:72vw;
       background:rgba(24,25,28,.93);border:1px solid rgba(255,255,255,.08);border-radius:10px;
       font-family:gg sans,sans-serif;color:#e3e5e8;box-shadow:0 8px 28px rgba(0,0,0,.5);pointer-events:auto}
     .vtlog-head{display:flex;align-items:center;gap:8px;padding:8px 10px;cursor:move;border-bottom:1px solid rgba(255,255,255,.07);user-select:none}
@@ -185,23 +190,35 @@
 
   // ---- transient subtitles ----
   const container = document.createElement("div"); container.className = "vt-container";
-  document.body.appendChild(container);
+  if (SHOW_SUBS) document.body.appendChild(container);
   const blocks = new Map(), order = [];
   let layoutTimer = null;
   function scheduleLayout(delay) {
     if (layoutTimer) clearTimeout(layoutTimer);
     layoutTimer = setTimeout(() => { layoutTimer = null; updateLayout(); }, Math.max(0, delay));
   }
-  function moveToBottom(uid, b) {
-    const i = order.indexOf(uid);
-    if (i >= 0 && i === order.length - 1) return;
-    if (i >= 0) order.splice(i, 1);
-    order.push(uid);
-    if (b && b.el && b.el.parentNode === container) container.appendChild(b.el);
-  }
+  // Keep subtitles STABLE: a speaker keeps the slot they first appeared in and updates in place,
+  // instead of being yanked to the bottom on every word (which made the stack jump around).
   function touchBlock(uid, b) {
     b.lastActive = Date.now();
-    moveToBottom(uid, b);
+  }
+  // FLIP: when a block is added/removed and the others shift, animate them from their old position
+  // to the new one so the eye can follow the movement instead of it snapping.
+  function withFlip(mutate) {
+    const first = new Map();
+    for (const uid of order) { const b = blocks.get(uid); if (b && b.el) first.set(uid, b.el.offsetTop); }
+    mutate();
+    for (const uid of order) {
+      const b = blocks.get(uid); if (!b || !b.el || !first.has(uid)) continue;
+      const dy = first.get(uid) - b.el.offsetTop;
+      if (!dy) continue;
+      const rest = b.el.style.transform || "";
+      b.el.style.transition = "none";
+      b.el.style.transform = "translateY(" + dy + "px) " + rest;
+      void b.el.offsetHeight;                                     // reflow with transition off (invert)
+      b.el.style.transition = "transform .3s cubic-bezier(.2,.7,.3,1), opacity .3s, box-shadow .2s";
+      requestAnimationFrame(() => { b.el.style.transform = rest; });   // play to resting position
+    }
   }
   function updateLayout() {
     if (layoutTimer) { clearTimeout(layoutTimer); layoutTimer = null; }
@@ -227,11 +244,26 @@
   function removeBlk(uid) {
     const b = blocks.get(uid); if (!b) return;
     if (b.timeout) clearTimeout(b.timeout);
-    b.el.style.opacity = "0"; setTimeout(() => b.el.remove(), 300);
-    blocks.delete(uid); const i = order.indexOf(uid); if (i >= 0) order.splice(i, 1);
-    updateLayout();
+    const el = b.el;
+    withFlip(() => {
+      // lift the leaving entry out of the flex flow so the survivors reflow up NOW (FLIP animates
+      // them); the leaving entry then fades away in place where it sat.
+      const cr = container.getBoundingClientRect(), r = el.getBoundingClientRect();
+      el.style.top = (r.top - cr.top) + "px";
+      el.style.left = (r.left - cr.left) + "px";
+      el.style.width = r.width + "px";
+      el.style.position = "absolute";
+      el.style.margin = "0";
+      el.style.pointerEvents = "none";
+      blocks.delete(uid); const i = order.indexOf(uid); if (i >= 0) order.splice(i, 1);
+      updateLayout();          // settle survivors' fade/scale first; FLIP then plays to that resting state
+    });
+    el.style.transition = "opacity .3s ease, transform .3s ease";
+    requestAnimationFrame(() => { el.style.opacity = "0"; el.style.transform = "translateY(-6px) scale(.96)"; });
+    setTimeout(() => el.remove(), 320);
   }
   function sub(uid, name, avatar, text, isFinal) {
+    if (!SHOW_SUBS) return;
     let b = blocks.get(uid);
     if (b && b.finalized) { removeBlk(uid); b = null; }
     if (!b) {
@@ -266,12 +298,13 @@
       <span class="vtlog-btn" data-act="copy">copy</span><span class="vtlog-btn" data-act="clear">clear</span>
       <span class="vtlog-btn" data-act="toggle">▾</span></div><div class="vtlog-body"></div>
       <div class="vtlog-jump">Jump to latest ↓</div>`;
-  document.body.appendChild(panel);
+  if (SHOW_LOG) document.body.appendChild(panel);
   const logBody = panel.querySelector(".vtlog-body"), head = panel.querySelector(".vtlog-head");
   const logJump = panel.querySelector(".vtlog-jump");
   const hstat = panel.querySelector("[data-hstat]"), htext = panel.querySelector("[data-htext]");
   const history = [];
-  logBody.style.height = LOG_H + "px";                  // configurable, drag-resizable
+  panel.style.width = LOG_W + "px";                     // configurable, drag-resizable (width)
+  logBody.style.height = LOG_H + "px";                  // configurable, drag-resizable (height)
   let pinned = true, lastAuto = 0, jumpTimer = null;
   const atBottom = () => logBody.scrollHeight - logBody.scrollTop - logBody.clientHeight < 28;
   const stickLog = () => {                               // scroll to bottom, then re-apply next frame
@@ -285,6 +318,7 @@
   });
   logJump.addEventListener("click", () => { pinned = true; logJump.style.display = "none"; lastAuto = Date.now(); logBody.scrollTop = logBody.scrollHeight; });
   function log(name, uid, avatar, text, ts, locked) {
+    if (!SHOW_LOG) return;
     const kw = matchKeyword(text);
     history.push({ name, text, ts, alert: !!kw });
     while (history.length > LOG_MAX) history.shift();
@@ -305,6 +339,7 @@
     if (LOG_AUTOSCROLL && pinned) stickLog();
   }
   function logEvent(name, uid, event, ts, avatar) {
+    if (!SHOW_LOG) return;
     const meta = EVENT[event]; if (!meta) return;
     const row = document.createElement("div"); row.className = "vtl-ev";
     const t = document.createElement("span"); t.className = "vtl-t"; t.textContent = new Date(ts).toLocaleTimeString([], { hour12: false });
@@ -398,7 +433,7 @@
   // ---- status (bottom pill + log header) ----
   const statusEl = document.createElement("div"); statusEl.className = "vt-status vtstat off";
   statusEl.innerHTML = `<span class="vt-dot"></span><span data-stext>Connecting…</span>`;
-  document.body.appendChild(statusEl);
+  if (SHOW_STATUS) document.body.appendChild(statusEl);
   const stext = statusEl.querySelector("[data-stext]");
   let lastStatus = 0;
   function setStatus(cls, text) {

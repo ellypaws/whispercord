@@ -26,11 +26,15 @@ DEFAULTS = {
                                         # changing this long (Whisper stuck looping on the same partial)
     },
     "overlay": {
+        "show_subtitles": True,         # bottom-center live subtitle bubbles
+        "show_log": True,               # top-right scrollable transcript log panel
+        "show_status": True,            # small connection/listening status pill
         "subtitle_timeout_ms": 8000,
         "max_blocks": 6,
         "fade_start_count": 5,
         "min_fade_opacity": 0.25,
         "shrink_quiet_subtitles": False,
+        "log_width": 360,               # in-Discord transcript log width (px, drag-resizable)
         "log_height": 300,              # in-Discord transcript log height (px, drag-resizable)
         "log_autoscroll": True,
     },
