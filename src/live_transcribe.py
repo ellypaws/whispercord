@@ -120,6 +120,8 @@ last_text = {}                                 # src -> last emitted text (to de
 last_speaking = {}                             # uid -> last time Discord's indicator showed them speaking
 spk_poll = {}                                  # client -> last time a fresh speaking read succeeded
 hooked_clients = set()                         # client exe names the Frida hook attached to
+hooked_pids = {}                               # live Frida-hooked pid -> client exe name (lower)
+frida_sessions = []                            # keep-alive (session, script) refs
 cdp_clients = set()                            # client exe names with a live CDP connection
 client_scripts = {}                            # client exe name -> live Frida script (for set_ssrcs rpc)
 self_gate = {}                                 # client -> bool: capture my mic for this client right now
@@ -267,14 +269,29 @@ def on_message(msg, data):
             if p.get("ssrc"):
                 src_ssrc[src] = p["ssrc"]
 
-def attach_hook():
-    """Attach to EVERY Discord-family process (Discord/PTB/Canary/Dev) that has
-    discord_voice loaded, locating the RVA per-module. Returns kept-alive sessions."""
-    dev = frida.get_local_device()
-    sessions = []
-    seen = set()
-    for pr in dev.enumerate_processes():
-        if not re.search(r"discord", pr.name, re.I):
+def _on_unhook(pid):
+    """A hooked process exited (e.g. a client relaunched from the UI). Forget it so the scan loop
+    re-attaches the replacement, and clear its client name if no other process of that name remains."""
+    name = hooked_pids.pop(pid, None)
+    if name and name not in hooked_pids.values():
+        hooked_clients.discard(name)
+        client_scripts.pop(name, None)
+    if name:
+        print("[capture] unhooked PID %d (%s) - will re-attach when it returns" % (pid, name))
+
+
+def attach_new():
+    """Hook the discord_voice node in any Discord-family process we haven't hooked yet. Re-runnable:
+    a client relaunched from the UI (new PID) is picked up on the next pass, so it auto-attaches
+    without restarting the engine. Skips processes whose discord_voice isn't loaded yet (not in a
+    call), and self-prunes via the 'detached' signal."""
+    try:
+        procs = frida.get_local_device().enumerate_processes()
+    except Exception:
+        return 0
+    n = 0
+    for pr in procs:
+        if pr.pid in hooked_pids or not re.search(r"discord", pr.name, re.I):
             continue
         try:
             s = frida.attach(pr.pid)
@@ -282,22 +299,36 @@ def attach_hook():
             sc.on("message", on_message)
             sc.load()
             path = sc.exports_sync.modpath()
-            if not path:
+            if not path:                       # discord_voice not loaded yet (no call) - try again later
                 s.detach(); continue
             rva, _ = locate_rva(path)
-            if sc.exports_sync.install(rva):
-                print("[capture] %s PID %d  RVA 0x%x" % (pr.name, pr.pid, rva))
-                sessions.append((s, sc)); seen.add(pr.name); hooked_clients.add(pr.name.lower())
-                client_scripts[pr.name.lower()] = sc   # mapping_thread pushes ssrcs here
-            else:
-                s.detach()
+            if not sc.exports_sync.install(rva):
+                s.detach(); continue
+            name = pr.name.lower()
+            hooked_pids[pr.pid] = name
+            hooked_clients.add(name)
+            client_scripts[name] = sc          # mapping_thread pushes ssrcs here (latest script wins)
+            frida_sessions.append((s, sc))
+            s.on("detached", lambda *a, _pid=pr.pid: _on_unhook(_pid))
+            print("[capture] hooked %s PID %d  RVA 0x%x" % (pr.name, pr.pid, rva))
+            n += 1
         except Exception:
             continue
-    if not sessions:
-        raise RuntimeError("no discord_voice process found "
-                           "(is a Discord client running and in a voice call?)")
-    print("[capture] hooked %d process(es): %s" % (len(sessions), ", ".join(sorted(seen))))
-    return sessions
+    return n
+
+
+def attach_thread():
+    """Initial hook, then keep polling so a client relaunched from the UI auto-attaches the voice
+    node (and the overlay re-injects via the CDP re-probe in mapping_thread)."""
+    if not attach_new():
+        print("[capture] no discord_voice process yet - will keep watching "
+              "(launch a client and join a voice call)")
+    while True:
+        time.sleep(3)
+        try:
+            attach_new()
+        except Exception:
+            pass
 
 # ---------------- own-voice capture (microphone, gated by Discord state) ----------------
 def self_capture_thread():
@@ -880,7 +911,7 @@ def main():
     threading.Thread(target=start_relay, daemon=True).start()
     threading.Thread(target=mapping_thread, daemon=True).start()
     threading.Thread(target=self_capture_thread, daemon=True).start()
-    sess = attach_hook()  # keep ref alive
+    threading.Thread(target=attach_thread, daemon=True).start()  # hook + auto-reattach restarted clients
 
     def rms_dbfs(audio):
         if audio.size == 0:

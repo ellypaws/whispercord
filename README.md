@@ -5,13 +5,16 @@
 </p>
 
 <p align="center">
-  Live, <b>per-user</b> speech-to-text for Discord voice calls — a desktop app with
+  Live, <b>per-user</b> speech-to-text for Discord voice calls, a desktop app with
   in-Discord subtitles, running entirely on your own machine.
 </p>
 
 <p align="center">
   <a href="https://github.com/ellypaws/whispercord/releases/latest">
     <img alt="Latest release" src="https://img.shields.io/github/v/release/ellypaws/whispercord?label=release&logo=github&color=5865f2">
+  </a>
+  <a href="https://github.com/ellypaws/whispercord/releases">
+    <img alt="Downloads" src="https://img.shields.io/github/downloads/ellypaws/whispercord/total?label=downloads&logo=github&color=5865f2">
   </a>
   <a href="https://github.com/ellypaws/whispercord/actions/workflows/release.yml">
     <img alt="Build" src="https://img.shields.io/github/actions/workflow/status/ellypaws/whispercord/release.yml?logo=githubactions&logoColor=white&label=build">

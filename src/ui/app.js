@@ -427,8 +427,9 @@ function renderReminders() {
       if (capturingNoNames || runningNoPort) {
         active.push({
           key: "noport:" + c.folder, folder: c.folder, fix: true,
-          text: clientLabel(c.exe) + " has no debug port connected, so its speakers show as “user 1a2b3”. "
-              + "Restart it with its port to resolve names (briefly drops its current call).",
+          text: clientLabel(c.exe) + " has no debug port connected, so its speakers show as “Unknown 1a2b3”. "
+              + "Restart it with its port to resolve names, or assign them by hand in the Speakers tab "
+              + "or by clicking a name in the Transcript.",
         });
       } else if (onScreenNeeded) {
         active.push({
