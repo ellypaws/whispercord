@@ -32,6 +32,8 @@
     "video-off": '<path d="M10.66 6H14a2 2 0 0 1 2 2v2.34l1 1L22 8v8"/><path d="M16 16a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h2l10 10Z"/><line x1="2" x2="22" y1="2" y2="22"/>',
     "screen-share": '<path d="M13 3H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-3"/><path d="M8 21h8"/><path d="M12 17v4"/><path d="m17 8 5-5"/><path d="M17 3h5v5"/>',
     "screen-share-off": '<path d="M13 3H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h7"/><path d="M8 21h8"/><path d="M12 17v4"/><path d="m22 3-5 5"/><path d="m17 3 5 5"/>',
+    "lock": '<rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
+    "lock-open": '<rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/>',
   };
   const icon = (name) => '<svg class="vt-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + (LU[name] || "") + "</svg>";
   const EVENT = {
@@ -49,7 +51,7 @@
   style.textContent = `
     .vt-container{position:fixed;bottom:96px;left:50%;transform:translateX(-50%);z-index:99999;
       width:52%;max-width:820px;pointer-events:none;display:flex;flex-direction:column;gap:8px;font-family:gg sans,sans-serif}
-    .vt-entry{display:flex;align-items:center;gap:12px;background:rgba(0,0,0,.82);border-radius:10px;padding:8px 12px;animation:vt-in .18s;transition:opacity .3s,box-shadow .2s}
+    .vt-entry{display:flex;align-items:center;gap:12px;background:rgba(0,0,0,.82);border-radius:10px;padding:8px 12px;animation:vt-in .18s;transition:opacity .3s,transform .3s,box-shadow .2s;transform-origin:center bottom}
     .vt-entry.vt-alert{box-shadow:0 0 0 2px ${ALERT_COLOR},0 0 14px ${ALERT_COLOR}}
     .vt-avatar{width:34px;height:34px;border-radius:50%;flex:0 0 auto;background:#2b2d31}
     .vt-text{color:#fff;font-size:16px;line-height:1.3}
@@ -75,8 +77,11 @@
     .vtlog-head .vtstat{font-size:11px;color:#b5bac1;flex:1}
     .vtlog-btn{cursor:pointer;font-size:12px;color:#b5bac1;background:rgba(255,255,255,.06);border-radius:5px;padding:2px 7px}
     .vtlog-btn:hover{background:rgba(255,255,255,.14);color:#fff}
-    .vtlog-body{overflow-y:auto;padding:6px 10px;font-size:13px;line-height:1.4;scrollbar-width:thin;resize:vertical;min-height:90px}
-    .vtlog-body::-webkit-scrollbar{width:8px}.vtlog-body::-webkit-scrollbar-thumb{background:rgba(255,255,255,.16);border-radius:4px}
+    .vtlog-body{overflow-y:auto;padding:6px 10px;font-size:13px;line-height:1.4;scrollbar-width:thin;scrollbar-color:#3f4248 transparent;resize:vertical;min-height:90px}
+    .vtlog-body::-webkit-scrollbar{width:10px}
+    .vtlog-body::-webkit-scrollbar-track{background:transparent}
+    .vtlog-body::-webkit-scrollbar-thumb{background:#3f4248;border-radius:8px;border:2px solid transparent;background-clip:padding-box}
+    .vtlog-body::-webkit-scrollbar-thumb:hover{background:#4f535b;background-clip:padding-box}
     .vtlog.collapsed .vtlog-body,.vtlog.collapsed .vtlog-jump{display:none}
     .vtlog-jump{position:absolute;bottom:10px;left:50%;transform:translateX(-50%);cursor:pointer;display:none;
       background:#5865f2;color:#fff;font-size:11px;font-weight:600;border-radius:999px;padding:4px 11px;box-shadow:0 2px 10px rgba(0,0,0,.5)}
@@ -86,16 +91,44 @@
     .vtl-c{flex:1;min-width:0;word-wrap:break-word}
     .vtl-t{color:#72767d;font-size:11px;margin-right:5px}
     .vtl-n{font-weight:600;margin-right:5px}
+    .vtl-n .vt-ico{width:12px;height:12px;opacity:.7;vertical-align:-1px;margin-left:2px}
     .vt-ico{width:14px;height:14px;flex:0 0 auto;vertical-align:-2px}
     .vtl-ev{display:flex;align-items:center;gap:6px;margin:3px 0;padding-left:6px;opacity:.78;font-size:12px;color:#b5bac1}
     .vtl-ev .vt-ico{margin-top:0}
     .vtl-ev-av{width:14px;height:14px;margin-top:0}
     .vtl-ev b{color:#dbdee1;font-weight:600}
     .vtl-ev .vtl-t{margin-right:0}
-    .vt-text mark,.vtl mark{background:${ALERT_COLOR};color:#fff;border-radius:3px;padding:0 2px}`;
+    .vt-text mark,.vtl mark{background:${ALERT_COLOR};color:#fff;border-radius:3px;padding:0 2px}
+    .vtl-n{cursor:default}
+    .vt-assign{position:fixed;z-index:100000;width:240px;max-height:320px;overflow:auto;background:rgba(24,25,28,.98);
+      border:1px solid rgba(255,255,255,.1);border-radius:10px;box-shadow:0 12px 32px rgba(0,0,0,.6);padding:6px;
+      font-family:gg sans,sans-serif;color:#e3e5e8;pointer-events:auto}
+    .vt-assign .va-h{font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:#949ba4;padding:4px 6px}
+    .vt-assign .va-list{display:flex;flex-direction:column}
+    .vt-assign .va-item{display:flex;align-items:center;gap:8px;padding:6px;border-radius:6px;cursor:pointer}
+    .vt-assign .va-item:hover{background:rgba(255,255,255,.08)}
+    .vt-assign .va-item img{width:22px;height:22px;border-radius:50%;flex:0 0 22px;background:#2b2d31}
+    .vt-assign .va-item span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}
+    .vt-assign .va-item small{margin-left:auto;color:#949ba4;font-size:10px;flex:0 0 auto}
+    .vt-assign .va-empty{color:#949ba4;font-size:11px;padding:6px;line-height:1.45}
+    .vt-assign .va-input{width:100%;margin:4px 0;background:#1e1f22;border:1px solid rgba(255,255,255,.1);color:#e3e5e8;border-radius:5px;padding:6px 8px;font:inherit;box-sizing:border-box}
+    .vt-assign .va-clear{display:flex;align-items:center;gap:6px;padding:6px;color:#f0b232;cursor:pointer;border-radius:6px;font-size:12px}
+    .vt-assign .va-clear:hover{background:rgba(255,255,255,.06)}
+    .vt-assign .va-clear .vt-ico{width:14px;height:14px}`;
   document.head.appendChild(style);
 
   const colorFor = (id) => { let h = 0; for (const c of String(id)) h = (h * 31 + c.charCodeAt(0)) >>> 0; return `hsl(${h % 360},65%,72%)`; };
+  // mirror the desktop transcript: undetected speakers get a stable emoji + the short id, on the
+  // gray default avatar; resolved (incl. manually-named) speakers keep their name/avatar.
+  const UNK_EMOJI = ["🦊","🐢","🦉","🦋","🐙","🦔","🦫","🐝","🦎","🐳","🦜","🐊","🦒","🦓","🦩","🦦","🐺","🦡","🐿️","🦃","🦚","🐌","🐠","🦂"];
+  const emojiFor = (id) => { let h = 0; for (const c of String(id)) h = (h * 31 + c.charCodeAt(0)) >>> 0; return UNK_EMOJI[h % UNK_EMOJI.length]; };
+  const unknownLabel = (id) => "Unknown " + String(id).slice(-5);   // emoji moves to the avatar
+  const emojiAvatar = (id) => "data:image/svg+xml;charset=utf-8," + encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40"><rect width="40" height="40" rx="20" fill="#3a3c43"/>'
+    + '<text x="50%" y="52%" dominant-baseline="central" text-anchor="middle" font-size="22">' + emojiFor(id) + '</text></svg>');
+  const speakerDisplay = (m) => (m.resolved === false)
+    ? { name: unknownLabel(m.userId), avatar: emojiAvatar(m.userId), locked: !!m.locked }
+    : { name: m.name || "unknown", avatar: (m.avatar || emojiAvatar(m.userId)), locked: !!m.locked };
   const matchKeyword = (t) => { if (!KEYWORDS.length || !t) return null; const l = t.toLowerCase(); for (const k of KEYWORDS) if (l.includes(k)) return k; return null; };
   function setText(el, text, kw) {
     el.textContent = "";
@@ -134,6 +167,9 @@
       let op = 1;
       if (n >= FADE_START && fromBottom >= FADE_START - 1) op = Math.max(MIN_FADE, 1 - (fromBottom - FADE_START + 2) * 0.28);
       b.el.style.opacity = String(op);
+      // older (top) entries also shrink in step with the fade, so the stack recedes
+      const scale = Math.max(0.62, 1 - (1 - op) * 0.4);
+      b.el.style.transform = scale < 0.999 ? "scale(" + scale.toFixed(3) + ")" : "";
     }
   }
   function removeBlk(uid) {
@@ -150,6 +186,7 @@
       while (order.length >= MAX_BLOCKS) removeBlk(order[0]);
       const el = document.createElement("div"); el.className = "vt-entry";
       const img = document.createElement("img"); img.className = "vt-avatar"; if (avatar) img.src = avatar;
+      img.onerror = () => { img.src = emojiAvatar(uid); };           // real avatar failed -> emoji
       const t = document.createElement("div"); t.className = "vt-text";
       const nm = document.createElement("span"); nm.className = "vt-name"; nm.textContent = name || "unknown"; nm.style.color = colorFor(uid);
       const body = document.createElement("span");
@@ -194,17 +231,21 @@
     else { pinned = false; if (!jumpTimer) jumpTimer = setTimeout(() => { if (!pinned) logJump.style.display = "block"; jumpTimer = null; }, 180); }
   });
   logJump.addEventListener("click", () => { pinned = true; logJump.style.display = "none"; lastAuto = Date.now(); logBody.scrollTop = logBody.scrollHeight; });
-  function log(name, uid, avatar, text, ts) {
+  function log(name, uid, avatar, text, ts, locked) {
     const kw = matchKeyword(text);
     history.push({ name, text, ts, alert: !!kw });
     while (history.length > LOG_MAX) history.shift();
     const row = document.createElement("div"); row.className = "vtl" + (kw ? " alert" : "");
     row.dataset.uid = uid;
-    const av = document.createElement("img"); av.className = "vtl-av"; if (avatar) av.src = avatar;
+    const av = document.createElement("img"); av.className = "vtl-av"; av.src = avatar || emojiAvatar(uid);
+    av.onerror = () => { av.src = emojiAvatar(uid); };                 // real avatar failed -> emoji
     av.onload = () => { if (LOG_AUTOSCROLL && pinned) stickLog(); };   // keep pinned once avatar lays out
     const c = document.createElement("div"); c.className = "vtl-c";
     const t = document.createElement("span"); t.className = "vtl-t"; t.textContent = new Date(ts).toLocaleTimeString([], { hour12: false });
     const n = document.createElement("span"); n.className = "vtl-n"; n.textContent = (kw ? "🔔 " : "") + (name || "unknown") + ":"; n.style.color = colorFor(uid);
+    if (locked) n.insertAdjacentHTML("beforeend", " " + icon("lock"));
+    n.title = "Click to reassign"; n.style.cursor = "pointer";
+    n.onclick = (e) => { e.stopPropagation(); openAssign(uid, n); };   // assignable, same picker as the desktop
     const b = document.createElement("span"); b.className = "vtl-tx"; b.dataset.text = text || ""; setText(b, text, kw);
     c.append(t, n, b); row.append(av, c); logBody.appendChild(row);
     while (logBody.children.length > LOG_MAX) logBody.removeChild(logBody.firstChild);
@@ -228,6 +269,56 @@
     while (logBody.children.length > LOG_MAX) logBody.removeChild(logBody.firstChild);
     if (LOG_AUTOSCROLL && pinned) stickLog();
   }
+  // ---- assign / reassign: the same picker as the desktop, driven over the relay ----
+  let roster = [];                                  // this client's call members, pushed by the engine
+  let assignPop = null;
+  const closeAssign = () => { if (assignPop) { assignPop.remove(); assignPop = null; } };
+  const sendAssign = (src, payload) => {
+    try { if (ws && ws.readyState === 1) ws.send(JSON.stringify(Object.assign({ type: "assign", src: src }, payload))); } catch (e) {}
+  };
+  function openAssign(src, anchor) {
+    closeAssign();
+    const pop = document.createElement("div"); pop.className = "vt-assign";
+    const head = document.createElement("div"); head.className = "va-h"; head.textContent = "Assign speaker"; pop.appendChild(head);
+    const members = roster.slice().sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")));
+    if (members.length) {
+      const list = document.createElement("div"); list.className = "va-list";
+      members.forEach((u) => {
+        const it = document.createElement("div"); it.className = "va-item";
+        const im = document.createElement("img"); im.src = u.avatar || emojiAvatar(u.userId);
+        const sp = document.createElement("span"); sp.textContent = u.name || "user";
+        it.append(im, sp);
+        if (u.stream) { const sm = document.createElement("small"); sm.textContent = "stream"; it.appendChild(sm); }
+        it.onclick = () => { sendAssign(src, { userId: u.userId }); closeAssign(); };
+        list.appendChild(it);
+      });
+      pop.appendChild(list);
+    } else {
+      const em = document.createElement("div"); em.className = "va-empty";
+      em.textContent = "No call roster (this client has no debug port). Type a name or paste a user ID.";
+      pop.appendChild(em);
+    }
+    const input = document.createElement("input"); input.className = "va-input"; input.placeholder = "name or user ID";
+    input.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter") return; const v = input.value.trim(); if (!v) return;
+      sendAssign(src, /^\d{15,21}$/.test(v) ? { userId: v } : { name: v }); closeAssign();
+    });
+    pop.appendChild(input);
+    const clr = document.createElement("div"); clr.className = "va-clear"; clr.innerHTML = icon("lock-open") + " Clear (auto-detect)";
+    clr.onclick = () => { sendAssign(src, { clear: true }); closeAssign(); };
+    pop.appendChild(clr);
+    document.body.appendChild(pop);
+    const r = anchor.getBoundingClientRect(); const w = pop.offsetWidth, h = pop.offsetHeight;
+    let left = r.left, top = r.bottom + 4;
+    if (left + w > innerWidth - 8) left = innerWidth - w - 8;
+    if (top + h > innerHeight - 8) top = r.top - h - 4;
+    pop.style.left = Math.max(8, left) + "px"; pop.style.top = Math.max(8, top) + "px";
+    pop.addEventListener("click", (e) => e.stopPropagation());
+    setTimeout(() => { try { input.focus(); } catch (e) {} }, 0);
+    assignPop = pop;
+  }
+  document.addEventListener("click", closeAssign);
+
   // re-apply keyword highlighting to everything already on screen after a live keyword edit
   function rehighlight() {
     blocks.forEach((b) => { const kw = matchKeyword(b.text); setText(b.body, b.text || "", kw); if (kw && !b.alerted) { b.alerted = true; b.el.classList.add("vt-alert"); } });
@@ -284,6 +375,7 @@
       return;
     }
     if (CLIENT && m.client && m.client !== CLIENT) return;   // ignore other clients' calls
+    if (m.type === "roster") { roster = m.members || []; return; }   // this client's members, for the picker
     if (m.type === "event") { logEvent(m.name, m.userId, m.event, m.ts || Date.now(), m.avatar); return; }
     if (m.type === "keepalive") {
       // the speaker is still talking even if this chunk had no words; keep the subtitle alive
@@ -292,11 +384,15 @@
       return;
     }
     if (m.type === "rename") {
+      const d = speakerDisplay(m);
       const esc = (window.CSS && CSS.escape) ? CSS.escape(m.userId) : m.userId;
       document.querySelectorAll('.vtl[data-uid="' + esc + '"]').forEach((r) => {
-        const n = r.querySelector(".vtl-n"); if (n) n.textContent = (m.name || "unknown") + ":";
-        const a = r.querySelector(".vtl-av"); if (a && m.avatar) a.src = m.avatar;
+        const n = r.querySelector(".vtl-n");
+        if (n) { n.textContent = d.name + ":"; if (d.locked) n.insertAdjacentHTML("beforeend", " " + icon("lock")); }
+        const a = r.querySelector(".vtl-av"); if (a) a.src = d.avatar;
       });
+      const b = blocks.get(m.userId);                       // also update an on-screen subtitle
+      if (b) { if (b.nm) b.nm.textContent = d.name; if (b.img) b.img.src = d.avatar; }
       return;
     }
     if (m.type !== "transcript") return;
@@ -305,8 +401,9 @@
       if (b) { b.finalized = true; if (b.timeout) clearTimeout(b.timeout); b.timeout = setTimeout(() => removeBlk(m.userId), 400); }
       return;
     }
-    sub(m.userId, m.name, m.avatar, m.text, m.isFinal);
-    if (m.isFinal && m.text) log(m.name || "unknown", m.userId, m.avatar, m.text, m.ts || Date.now());
+    const d = speakerDisplay(m);
+    sub(m.userId, d.name, d.avatar, m.text, m.isFinal);
+    if (m.isFinal && m.text) log(d.name, m.userId, d.avatar, m.text, m.ts || Date.now(), d.locked);
   }
 
   let ws = null, stopped = false;
