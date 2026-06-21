@@ -33,8 +33,21 @@ def models_dir():
     return d
 
 
+# Exact gfx (from gpu_detect) -> the HIP artifact group the CI builds (one binary per RDNA family,
+# matching .github/workflows/whispercpp-build.yml).
+_GFX_GROUP = {
+    "gfx1100": "gfx110X", "gfx1101": "gfx110X", "gfx1102": "gfx110X",
+    "gfx1200": "gfx120X", "gfx1201": "gfx120X",
+    "gfx1150": "gfx1150", "gfx1151": "gfx1151",
+}
+
+
+def _hip_group(gfx):
+    return _GFX_GROUP.get(gfx, "gfx110X")
+
+
 def _variant_key(backend, gfx):
-    return "hip-%s" % (gfx or "gfx1100") if backend == "hip" else backend   # vulkan | cpu
+    return "hip-%s" % _hip_group(gfx) if backend == "hip" else backend   # vulkan | cpu
 
 
 def _lib_dir(backend, gfx):
@@ -47,7 +60,7 @@ def _asset_url(backend, gfx):
     if backend == "vulkan":
         return OUR_BASE + "whispercpp-vulkan-x64.zip"
     if backend == "hip":
-        return OUR_BASE + "whispercpp-hip-%s-x64.zip" % (gfx or "gfx1100")
+        return OUR_BASE + "whispercpp-hip-%s-x64.zip" % _hip_group(gfx)
     return UPSTREAM_BASE + "whisper-bin-x64.zip"        # cpu (validation / parity)
 
 

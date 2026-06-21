@@ -1,0 +1,154 @@
+# Build the whisper.cpp GPU runtimes the app downloads on first use (P3 of the AMD/Intel backend).
+#
+# Produces, as release assets on tag `whispercpp-v1.9.1`, the DLL bundles that whispercpp_setup.py
+# fetches by detected backend+arch:
+#   * whispercpp-vulkan-x64.zip          (universal AMD/Intel/NVIDIA, one binary)
+#   * whispercpp-hip-<group>-x64.zip     (per-arch ROCm; group covers an RDNA family)
+# Each zip is whisper.dll + ggml*.dll laid out FLAT in one folder (ggml_backend_load_all_from_path
+# loads the backend DLLs from there).
+#
+# HIP-on-Windows approach is cribbed from lemonade-sdk/llamacpp-rocm: build on windows-2022 with
+# AMD's "TheRock" nightly ROCm tarball (no slow HIP SDK installer) + ROCm clang. This workflow runs
+# on YOUR infra (GitHub Actions); it can't be validated locally. Expect to iterate on the first run —
+# the HIP packaging (which rocBLAS/hip runtime DLLs to bundle) is the most likely thing to adjust.
+name: Build whisper.cpp GPU runtimes
+
+on:
+  workflow_dispatch:
+    inputs:
+      whispercpp_ref:
+        description: whisper.cpp git tag/ref to build
+        default: v1.9.1
+      hip_groups:
+        description: HIP gfx groups to build (comma-separated)
+        default: gfx110X,gfx120X,gfx1151,gfx1150
+      publish:
+        description: Publish a release with the artifacts
+        type: boolean
+        default: true
+
+env:
+  WHISPERCPP_REF: ${{ github.event.inputs.whispercpp_ref || 'v1.9.1' }}
+  RELEASE_TAG: whispercpp-${{ github.event.inputs.whispercpp_ref || 'v1.9.1' }}
+
+jobs:
+  # ---------------------------------------------------------------- Vulkan (universal, one binary)
+  build-vulkan:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ggml-org/whisper.cpp
+          ref: ${{ env.WHISPERCPP_REF }}
+      - name: Install Vulkan SDK
+        shell: pwsh
+        run: |
+          $ver = "1.3.290.0"
+          $url = "https://sdk.lunarg.com/sdk/download/$ver/windows/VulkanSDK-$ver-Installer.exe"
+          Invoke-WebRequest $url -OutFile "$env:TEMP\vk.exe"
+          Start-Process "$env:TEMP\vk.exe" -ArgumentList "--accept-licenses","--default-answer","--confirm-command","install" -Wait
+          "VULKAN_SDK=C:\VulkanSDK\$ver" | Out-File -Append $env:GITHUB_ENV
+      - name: Build
+        shell: pwsh
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON `
+            -DGGML_VULKAN=ON -DWHISPER_BUILD_EXAMPLES=OFF -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_SERVER=OFF
+          cmake --build build --config Release -j
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force pkg | Out-Null
+          Get-ChildItem -Recurse build -Include *.dll | Copy-Item -Destination pkg -Force
+          if (-not (Test-Path pkg\whisper.dll)) { throw "whisper.dll not produced" }
+          Compress-Archive -Path pkg\* -DestinationPath whispercpp-vulkan-x64.zip -Force
+      - uses: actions/upload-artifact@v4
+        with:
+          name: whispercpp-vulkan-x64
+          path: whispercpp-vulkan-x64.zip
+
+  # ---------------------------------------------------------------- HIP / ROCm (per RDNA family)
+  build-hip:
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        gfx: [gfx110X, gfx120X, gfx1151, gfx1150]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ggml-org/whisper.cpp
+          ref: ${{ env.WHISPERCPP_REF }}
+      - name: Install Ninja
+        shell: pwsh
+        run: choco install ninja -y --no-progress
+      - name: Resolve AMDGPU_TARGETS for this group
+        shell: pwsh
+        run: |
+          $map = @{ "gfx110X"="gfx1100;gfx1101;gfx1102"; "gfx120X"="gfx1200;gfx1201";
+                    "gfx1151"="gfx1151"; "gfx1150"="gfx1150" }
+          "AMDGPU_TARGETS=$($map['${{ matrix.gfx }}'])" | Out-File -Append $env:GITHUB_ENV
+      - name: Download + extract ROCm (TheRock nightly)
+        shell: pwsh
+        run: |
+          $t = "${{ matrix.gfx }}"
+          $s3 = if ($t -in @("gfx110X","gfx120X")) { "$t-all" } else { $t }   # TheRock target suffix
+          $list = (Invoke-WebRequest "https://therock-nightly-tarball.s3.amazonaws.com/?prefix=therock-dist-windows-$s3-7").Content
+          $files = $list -split '<Key>' | Where-Object { $_ -match '\.tar\.gz</Key>' } | ForEach-Object { ($_ -split '</Key>')[0] }
+          $latest = $files | Sort-Object | Select-Object -Last 1
+          if (-not $latest) { throw "no ROCm tarball for $s3" }
+          Write-Host "ROCm tarball: $latest"
+          Invoke-WebRequest "https://therock-nightly-tarball.s3.amazonaws.com/$latest" -OutFile rocm.tar.gz
+          New-Item -ItemType Directory -Force C:\opt\rocm | Out-Null
+          tar -xf rocm.tar.gz -C C:\opt\rocm
+      - name: Build
+        shell: cmd
+        run: |
+          set HIP_PLATFORM=amd
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON ^
+            -DCMAKE_C_COMPILER="C:/opt/rocm/lib/llvm/bin/clang.exe" ^
+            -DCMAKE_CXX_COMPILER="C:/opt/rocm/lib/llvm/bin/clang++.exe" ^
+            -DCMAKE_PREFIX_PATH="C:/opt/rocm" ^
+            -DGGML_HIP=ON -DGGML_HIP_ROCWMMA_FATTN=OFF ^
+            -DAMDGPU_TARGETS="%AMDGPU_TARGETS%" ^
+            -DWHISPER_BUILD_EXAMPLES=OFF -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_SERVER=OFF || exit /b 1
+          cmake --build build -j %NUMBER_OF_PROCESSORS% || exit /b 1
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force pkg | Out-Null
+          Get-ChildItem -Recurse build -Include *.dll | Copy-Item -Destination pkg -Force
+          # ROCm runtime DLLs the HIP backend links against (amdhip64 is also provided by the AMD
+          # driver, but bundle for safety; rocblas/hipblas only if ggml-hip pulled them in).
+          foreach ($d in "amdhip64*.dll","hipblas.dll","rocblas.dll") {
+            Get-ChildItem "C:\opt\rocm\bin\$d" -ErrorAction SilentlyContinue | Copy-Item -Destination pkg -Force
+          }
+          if (-not (Test-Path pkg\whisper.dll)) { throw "whisper.dll not produced" }
+          Compress-Archive -Path pkg\* -DestinationPath "whispercpp-hip-${{ matrix.gfx }}-x64.zip" -Force
+      - uses: actions/upload-artifact@v4
+        with:
+          name: whispercpp-hip-${{ matrix.gfx }}-x64
+          path: whispercpp-hip-${{ matrix.gfx }}-x64.zip
+
+  # ---------------------------------------------------------------- publish
+  release:
+    needs: [build-vulkan, build-hip]
+    if: ${{ github.event.inputs.publish != 'false' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -la dist
+          gh release create "$RELEASE_TAG" dist/*.zip \
+            --repo "${{ github.repository }}" \
+            --title "whisper.cpp runtimes ($WHISPERCPP_REF)" \
+            --notes "Vulkan + per-arch HIP whisper.cpp DLL bundles for the AMD/Intel backend." \
+            || gh release upload "$RELEASE_TAG" dist/*.zip --repo "${{ github.repository }}" --clobber
