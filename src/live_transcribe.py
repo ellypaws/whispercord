@@ -176,7 +176,7 @@ last_emit = collections.defaultdict(float)     # src -> last time we sent the ov
 last_loud = collections.defaultdict(float)     # src -> last time the audio was speech-level (above gate)
 last_change = collections.defaultdict(float)   # src -> last time the transcript text actually changed
 last_text = {}                                 # src -> last emitted text (to detect a stuck/unchanging run)
-last_speaking = {}                             # uid -> last time Discord's indicator showed them speaking
+last_speaking = {}                             # (client, uid) -> last time that client's indicator showed them speaking
 spk_poll = {}                                  # client -> last time a fresh speaking read succeeded
 hooked_clients = set()                         # client exe names the Frida hook attached to
 hooked_pids = {}                               # live Frida-hooked pid -> client exe name (lower)
@@ -205,6 +205,7 @@ def display_name(src, name):
     return (base + SCREEN_LABEL) if kind_of(src) == "stream" else base
 
 SELF = CFG.get("self_transcribe", {})          # own-voice transcription options
+SELF_SPEAK_GRACE_S = 1.0                       # Discord self-speaking can flicker between VAD polls
 
 
 def apply_live_config(cfg):
@@ -529,6 +530,15 @@ def self_enabled_for(client):
     return (SELF.get("clients") or {}).get(client, True)
 
 
+def _state_reliable(state, key):
+    if not state:
+        return False
+    value = state.get(key)
+    if value is None:
+        value = state.get("reliable")
+    return bool(value)
+
+
 def _client_from_url(url):
     """Map a renderer URL to its client exe, so custom CDP ports still isolate per client.
     Check PTB/Canary before stable, since their hosts contain 'discord.com' as a substring."""
@@ -730,17 +740,6 @@ def mapping_thread():
             try:
                 speaking = set(speaking_users(c))
                 st0["fails"] = 0
-                # record who Discord says is speaking so the transcription loop can trust the
-                # indicator (and note this client gives fresh speaking data, even when nobody speaks)
-                if client:
-                    spk_poll[client] = now
-                for _uid in speaking:
-                    last_speaking[_uid] = now
-                # push who's speaking to the UI when the set changes (persists until the next change)
-                cur_spk = frozenset(speaking)
-                if client and cur_spk != st0.get("spk_bcast"):
-                    st0["spk_bcast"] = cur_spk
-                    broadcast({"type": "speaking", "client": client, "ids": list(speaking)})
             except Exception:
                 st0["fails"] += 1
                 if st0["fails"] >= 5:           # tolerate transient errors; drop only after sustained failure
@@ -751,22 +750,45 @@ def mapping_thread():
                     print("[map] CDP on port %d dropped; will retry" % port)
                 continue
 
+            try:
+                sst = self_state(c)
+            except Exception:
+                sst = None
+
+            # record who Discord says is speaking so the transcription loop can trust the
+            # indicator (and note this client gives fresh speaking data, even when nobody speaks).
+            # speaking_users() intentionally excludes self for binding; self_state() is merged only
+            # for UI activity and own-voice gating so the green ring also reflects your local client.
+            if client:
+                spk_poll[client] = now
+                for _uid in speaking:
+                    last_speaking[(client, _uid)] = now
+            ui_speaking = set(speaking)
+            if client and sst and _state_reliable(sst, "speakingReliable") and sst.get("inCall") and sst.get("speaking") and sst.get("selfId"):
+                ui_speaking.add(sst["selfId"])
+                last_speaking[(client, sst["selfId"])] = now
+            # push who's speaking to the UI when the set changes (persists until the next change)
+            cur_spk = frozenset(ui_speaking)
+            if client and cur_spk != st0.get("spk_bcast"):
+                st0["spk_bcast"] = cur_spk
+                broadcast({"type": "speaking", "client": client, "ids": list(ui_speaking)})
+
             # own-voice gate (per client): only capture my mic when Discord agrees I'm speaking/unmuted
             if client and self_enabled_for(client):
-                try:
-                    sst = self_state(c)
-                except Exception:
-                    sst = None
                 open_ = False
                 if sst and sst.get("inCall"):
                     needs_unmute = SELF.get("only_when_unmuted", True)
                     needs_speak = SELF.get("require_discord_speaking", True)
+                    mute_reliable = _state_reliable(sst, "muteReliable")
+                    speak_reliable = _state_reliable(sst, "speakingReliable")
                     ok_mute = (not needs_unmute) or (not sst.get("muted"))
-                    ok_speak = (not needs_speak) or bool(sst.get("speaking"))
-                    # Per-client gating: only open when THIS client confirms the conditions. If a gate
-                    # is required but this client's state isn't reliably readable (DOM-only, call off
-                    # screen), fail closed so a muted/PTT background client can't leak the mic.
-                    if (needs_unmute or needs_speak) and not sst.get("reliable"):
+                    self_spk_key = (client, sst.get("selfId")) if sst.get("selfId") else None
+                    ok_speak = (not needs_speak) or bool(
+                        self_spk_key and now - last_speaking.get(self_spk_key, 0) <= SELF_SPEAK_GRACE_S)
+                    # Per-client gating: only open when THIS client confirms the required conditions.
+                    # DOM fallback can still give a reliable self mute switch even if other self-state
+                    # fields are not reliable, so fail closed per signal instead of all-or-nothing.
+                    if (needs_unmute and not mute_reliable) or (needs_speak and not speak_reliable):
                         open_ = False
                     else:
                         open_ = bool(ok_mute and ok_speak)
@@ -1133,9 +1155,10 @@ def main():
                 # fall back to the loudness gate alone. Screenshare ('stream') sources have no speaker.
                 uid = (src2user.get(src) or {}).get("userId")
                 cl = src_client.get(src)
-                spk_known = bool(REQUIRE_SPEAKING and kind_of(src) != "stream" and uid and cl
-                                 and now - spk_poll.get(cl, 0) < 2.0 and uid in last_speaking)
-                spk_silent = spk_known and (now - last_speaking.get(uid, 0) >= SPK_GRACE_S)
+                spk_key = (cl, uid) if cl and uid else None
+                spk_known = bool(REQUIRE_SPEAKING and kind_of(src) != "stream" and spk_key
+                                 and now - spk_poll.get(cl, 0) < 2.0 and spk_key in last_speaking)
+                spk_silent = spk_known and (now - last_speaking.get(spk_key, 0) >= SPK_GRACE_S)
                 # "Still speaking" is decided by LOUDNESS, not by frames merely arriving: the
                 # native stream keeps delivering quiet comfort-noise frames between words, which
                 # must neither extend an utterance nor keep a subtitle alive. An utterance ends

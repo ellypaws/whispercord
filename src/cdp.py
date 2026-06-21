@@ -146,18 +146,26 @@ window.__vtr = (() => {
       const me = s.US.getCurrentUser && s.US.getCurrentUser(); if (!me) return null;
       const ch = s.RCS && s.RCS.getChannelId && s.RCS.getChannelId();   // THIS client's voice channel
       let muted = false, deaf = false, speaking = false;
-      // Prefer the actual voice-connection self state for the channel THIS client is connected to.
-      // It's per-connection and independent of what's on screen, so a client muted in the background
-      // still reads as muted (MediaEngineStore is only a fallback).
+      // Prefer this renderer's local media-engine state for self mute/deaf. VoiceStateStore can be
+      // shared/stale for the account across clients, while MediaEngineStore reflects THIS client.
       let vs = null;
       try { if (ch && s.VSS && s.VSS.getVoiceStatesForChannel) vs = (s.VSS.getVoiceStatesForChannel(ch) || {})[me.id] || null; } catch (e) {}
-      if (vs) { muted = !!(vs.selfMute || vs.mute || vs.suppress); deaf = !!(vs.selfDeaf || vs.deaf); }
-      else {
-        try { if (s.MES && s.MES.isSelfMute) muted = !!s.MES.isSelfMute(); } catch (e) {}
-        try { if (s.MES && s.MES.isSelfDeaf) deaf = !!s.MES.isSelfDeaf(); } catch (e) {}
-      }
-      try { if (s.SS && s.SS.isSpeaking) speaking = !!s.SS.isSpeaking(me.id); } catch (e) {}
-      return { selfId: me.id, channelId: ch || null, inCall: !!ch, muted: muted, deaf: deaf, speaking: speaking, reliable: true };
+      let mediaMute = null, mediaDeaf = null;
+      try { if (s.MES && s.MES.isSelfMute) mediaMute = !!s.MES.isSelfMute(); } catch (e) {}
+      try { if (s.MES && s.MES.isSelfDeaf) mediaDeaf = !!s.MES.isSelfDeaf(); } catch (e) {}
+      const serverMute = !!(vs && (vs.mute || vs.suppress));
+      const serverDeaf = !!(vs && vs.deaf);
+      muted = (mediaMute !== null) ? (mediaMute || serverMute) : !!(vs && (vs.selfMute || vs.mute || vs.suppress));
+      deaf = (mediaDeaf !== null) ? (mediaDeaf || serverDeaf) : !!(vs && (vs.selfDeaf || vs.deaf));
+      let speakingReliable = false;
+      try {
+        if (s.SS && s.SS.isSpeaking) {
+          speaking = !!s.SS.isSpeaking(me.id);
+          speakingReliable = true;
+        }
+      } catch (e) {}
+      return { selfId: me.id, channelId: ch || null, inCall: !!ch, muted: muted, deaf: deaf, speaking: speaking,
+               reliable: true, muteReliable: true, speakingReliable: speakingReliable };
     } catch (e) { return null; }
   };
   const wpUser = (uid) => {
@@ -257,8 +265,9 @@ window.__vtr = (() => {
       }
     }
     // (b) per-tile speaking state from the DOM speaking ring / usernameSpeaking class. The fiber
-    //     `speaking` prop is unreliable (self-only on Canary, stuck-true for many on PTB), so we
-    //     only trust the ring; keep the fiber value separately just for self.
+    //     `speaking` prop is unreliable for remote users (stuck-true on some PTB builds), so remote
+    //     speaking trusts the ring. Keep the fiber value separately because self speaking can be
+    //     exposed there before/without the same visible ring.
     document.querySelectorAll('[class*="voiceUser"]').forEach((t) => {
       let f = fiberOf(t), hops = 0, u = null, nick = null, fsp = false;
       while (f && hops < 6) {
@@ -272,10 +281,13 @@ window.__vtr = (() => {
       if (o.username === undefined) o.username = u.username;
       if (o.avatar === undefined) o.avatar = avatarUrl(u, null, null);
       let dom = false;
-      try { dom = !!t.querySelector('[class*="usernameSpeaking" i],[class*="avatarSpeaking" i],[class*="speaking" i]'); } catch (e) {}
-      if (dom) o.speaking = true;
-      else if (o.speaking === undefined) o.speaking = false;
-      if (fsp) o.fiberSpeaking = true;
+      try {
+        const speakingSel = '[class*="usernameSpeaking" i],[class*="avatarSpeaking" i],[class*="speaking" i]';
+        dom = t.matches(speakingSel) || !!t.querySelector(speakingSel);
+      } catch (e) {}
+      o.domSpeaking = (o.domSpeaking === true) || dom;
+      o.speaking = o.domSpeaking;
+      o.fiberSpeaking = (o.fiberSpeaking === true) || fsp;
     });
     _r = out; _rt = now;
     return out;
@@ -295,17 +307,37 @@ window.__vtr = (() => {
       '[class*="accountProfile"] img[src*="/avatars/"], [class*="avatarWrapper"] img[src*="/avatars/"], section[class*="panel"] img[src*="/avatars/"]');
     if (accImg) { const m = (accImg.src || "").match(re); if (m) selfId = m[1]; }
     let muted = false, deaf = false, inCall = false;
+    const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+    const sw = Array.from(document.querySelectorAll('button[role="switch"][aria-label]')).filter(vis);
+    const muteSw = sw.find((b) => /^(un)?mute$/i.test(b.getAttribute("aria-label") || ""));
+    const deafSw = sw.find((b) => /^((un)?deafen)$/i.test(b.getAttribute("aria-label") || ""));
+    if (muteSw) muted = muteSw.getAttribute("aria-checked") === "true" || /^unmute$/i.test(muteSw.getAttribute("aria-label") || "");
+    if (deafSw) deaf = deafSw.getAttribute("aria-checked") === "true" || /^undeafen$/i.test(deafSw.getAttribute("aria-label") || "");
+    if (!muteSw || !deafSw) {
+      document.querySelectorAll('button[aria-label],[role="button"][aria-label]').forEach((b) => {
+        if (!vis(b)) return;
+        const a = (b.getAttribute("aria-label") || "");
+        if (!muteSw && /^unmute$/i.test(a)) muted = true;
+        if (!deafSw && /^undeafen$/i.test(a)) deaf = true;
+      });
+    }
     document.querySelectorAll('button[aria-label],[role="button"][aria-label]').forEach((b) => {
-      const a = (b.getAttribute("aria-label") || "");
-      if (/^unmute$/i.test(a)) muted = true;
-      if (/^undeafen$/i.test(a)) deaf = true;
-      if (/^disconnect$/i.test(a)) inCall = true;
+      if (vis(b) && /^disconnect$/i.test(b.getAttribute("aria-label") || "")) inCall = true;
     });
     let speaking = false;
-    if (selfId) { const r = roster(); if (r[selfId]) speaking = !!r[selfId].fiberSpeaking; }
+    let speakingReliable = false;
+    if (selfId) {
+      const r = roster();
+      const me = r[selfId];
+      if (me) {
+        speaking = !!(me.domSpeaking || me.fiberSpeaking);
+        speakingReliable = true;
+      }
+    }
     // reliable:false — scraped from the DOM, only valid when this client's call panel is on screen;
     // the own-voice gate fails closed on an unreliable read so a muted/background client won't leak.
-    return { selfId: selfId, channelId: inCall ? 1 : null, inCall: inCall, muted: muted, deaf: deaf, speaking: speaking, reliable: false };
+    return { selfId: selfId, channelId: inCall ? 1 : null, inCall: inCall, muted: muted, deaf: deaf, speaking: speaking,
+             reliable: false, muteReliable: !!muteSw, speakingReliable: speakingReliable };
   };
 
   // ======== public API: PRIMARY (webpack) first, FALLBACK (DOM) second ========
@@ -329,7 +361,17 @@ window.__vtr = (() => {
       }
       return o;
     },
-    self: () => wpSelf() || domSelf(),
+    self: () => {
+      const w = wpSelf();
+      if (!w) return domSelf();
+      if (w.speakingReliable) return w;
+      const d = domSelf();
+      if (d && d.speakingReliable) {
+        w.speaking = d.speaking;
+        w.speakingReliable = true;
+      }
+      return w;
+    },
     ssrcMap: () => wpSsrcMap(),
     user: (uid) => {
       const w = wpUser(uid);
