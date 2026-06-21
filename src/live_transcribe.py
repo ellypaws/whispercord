@@ -947,6 +947,20 @@ def mapping_thread():
                                             "video": bool(vst.get("video"))})
                     broadcast({"type": "roster", "client": client, "members": members})
 
+            # self identity: surface our own Discord names (server nick, real display name, username)
+            # so the desktop UI can offer them as alert keywords. Broadcast once per change per client.
+            if client and now - st0.get("selfid_t", 0) > 4.0:
+                st0["selfid_t"] = now
+                try:
+                    sid = self_state(c)
+                except Exception:
+                    sid = None
+                if sid and sid.get("selfId"):
+                    names = [n for n in (sid.get("nick"), sid.get("globalName"), sid.get("username")) if n]
+                    if names and names != st0.get("selfid_names"):
+                        st0["selfid_names"] = names
+                        broadcast({"type": "selfIdentity", "names": names})
+
             # --- native per-stream binding via ssrc (the reliable path) ---
             # Pull this client's ssrc->user table ~1x/sec and feed the audio ssrcs back to the
             # Frida hook so it can pin remote_ssrc_'s offset and tag every frame with its ssrc.

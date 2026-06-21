@@ -164,8 +164,15 @@ window.__vtr = (() => {
           speakingReliable = true;
         }
       } catch (e) {}
+      let guildId = null, nick = null;       // our own server nickname, for keyword suggestions
+      try {
+        const chO = ch && s.CS && s.CS.getChannel && s.CS.getChannel(ch);
+        guildId = chO && chO.guild_id;
+        if (guildId && s.GMS && s.GMS.getMember) { const m = s.GMS.getMember(guildId, me.id); if (m) nick = m.nick; }
+      } catch (e) {}
       return { selfId: me.id, channelId: ch || null, inCall: !!ch, muted: muted, deaf: deaf, speaking: speaking,
-               reliable: true, muteReliable: true, speakingReliable: speakingReliable };
+               reliable: true, muteReliable: true, speakingReliable: speakingReliable,
+               username: me.username || null, globalName: me.globalName || null, nick: nick || null };
     } catch (e) { return null; }
   };
   const wpUser = (uid) => {
@@ -339,6 +346,29 @@ window.__vtr = (() => {
     return { selfId: selfId, channelId: inCall ? 1 : null, inCall: inCall, muted: muted, deaf: deaf, speaking: speaking,
              reliable: false, muteReliable: !!muteSw, speakingReliable: speakingReliable };
   };
+  // Reliable, webpack-free self NAMES from the bottom-left account panel (anchored off the User
+  // Settings gear): it always shows the global display name; the @username sits in its hover element.
+  // Used to backfill self() when the Flux stores are unreachable (the common case on current builds).
+  const domSelfNames = () => {
+    try {
+      const clean = (s) => (s || "").replace(/\s+/g, " ").trim();
+      const isHandle = (t) => /^[a-z0-9_.]{2,32}$/i.test(t);
+      const gear = document.querySelector('[aria-label*="User Settings" i]');
+      let panel = null;
+      if (gear) { let n = gear; for (let i = 0; i < 8 && n; i++) { n = n.parentElement; if (n && n.querySelector('img[src*="/avatars/"]')) { panel = n; break; } } }
+      if (!panel) return null;
+      const img = panel.querySelector('img[src*="/avatars/"]');
+      const idm = img && (img.getAttribute("src") || "").match(/\/avatars\/(\d{15,21})\//);
+      const titleEl = panel.querySelector('[class*="panelTitle"]');
+      const display = titleEl ? clean(titleEl.textContent) : null;
+      let username = null;     // accept only a clean handle, never status/activity text
+      for (const e of panel.querySelectorAll('[class*="hovered"]')) {
+        const t = clean(e.textContent);
+        if (t && isHandle(t) && (!display || t.toLowerCase() !== display.toLowerCase())) { username = t; break; }
+      }
+      return { selfId: idm ? idm[1] : null, globalName: display || null, username: username || null };
+    } catch (e) { return null; }
+  };
 
   // ======== public API: PRIMARY (webpack) first, FALLBACK (DOM) second ========
   return {
@@ -362,15 +392,24 @@ window.__vtr = (() => {
       return o;
     },
     self: () => {
-      const w = wpSelf();
-      if (!w) return domSelf();
-      if (w.speakingReliable) return w;
-      const d = domSelf();
-      if (d && d.speakingReliable) {
-        w.speaking = d.speaking;
-        w.speakingReliable = true;
+      let base = wpSelf();
+      if (!base) base = domSelf();
+      else if (!base.speakingReliable) {
+        const d = domSelf();
+        if (d && d.speakingReliable) { base.speaking = d.speaking; base.speakingReliable = true; }
       }
-      return w;
+      if (!base) return null;
+      // Backfill identity names from the DOM when the webpack stores didn't supply them (kept as the
+      // backup). globalName + username are enough for keyword suggestions; server nick stays best-effort.
+      if (!base.globalName || !base.username) {
+        const dn = domSelfNames();
+        if (dn) {
+          if (!base.globalName && dn.globalName) base.globalName = dn.globalName;
+          if (!base.username && dn.username) base.username = dn.username;
+          if (!base.selfId && dn.selfId) base.selfId = dn.selfId;
+        }
+      }
+      return base;
     },
     ssrcMap: () => wpSsrcMap(),
     user: (uid) => {

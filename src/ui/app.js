@@ -136,7 +136,7 @@ function setAnyHl(el, text, terms) {
   }
   if (i < t.length) el.appendChild(document.createTextNode(t.slice(i)));
 }
-// Whisper sound events — [laughs], [LAUGHTER], (claps), *Nyuh*, ♪music♪ — rendered as highlighted
+// Whisper sound events ([laughs], [LAUGHTER], (claps), *Nyuh*, ♪music♪) rendered as highlighted
 // .sound spans; the speech around them still gets keyword/search highlighting.
 const SOUND_RE = /[\[(*♪][^\][()*♪]*[\])*♪]/g;
 function renderLineText(el, text) {
@@ -766,6 +766,7 @@ function fillForm(c) {
   $("o_log").checked = o.show_log !== false;
   $("o_status").checked = o.show_status !== false;
   $("o_shrink").checked = o.shrink_quiet_subtitles === true;
+  $("o_merge").checked = o.merge_subtitles !== false;
   $("o_logw").value = o.log_width ?? 360;
   $("o_logh").value = o.log_height ?? 300;
   $("ui_events").checked = c.voice_events !== false;
@@ -824,6 +825,7 @@ function readForm() {
       show_log: $("o_log").checked,
       show_status: $("o_status").checked,
       shrink_quiet_subtitles: $("o_shrink").checked,
+      merge_subtitles: $("o_merge").checked,
       log_width: parseInt($("o_logw").value, 10) || 360,
       log_height: parseInt($("o_logh").value, 10) || 300,
     }),
@@ -866,6 +868,87 @@ function initPills() {
     else if (e.key === "Backspace" && !input.value && kwList.length) { kwList.pop(); renderPills(); scheduleSave(); rehighlightAll(); }
   });
   input.addEventListener("blur", () => { if (input.value.trim()) { addKw(input.value); input.value = ""; } });
+  const sug = $("kw-suggest");
+  if (sug) sug.onclick = () => {
+    if (!selfNames.length) { toast("Join a voice call so we can read your name", false); return; }
+    const s = keywordSuggestions(selfNames);
+    if (!s.length) { toast("Your names are already in the list", false); return; }
+    openKeywordSetup(s, false);
+  };
+}
+
+// ---------- first-run "alert on your name" keyword setup ----------
+// Pre-fill the user's own Discord names (server nick, real display name, username) as alert keywords,
+// plus a first-name split of any multi-word name (people often say just the first name). Deduped and
+// minus anything already in the list.
+let selfNames = [];           // our own names, learned from the engine's selfIdentity broadcast
+let kwPromptShown = false;    // only auto-open the first-run popup once per session
+function keywordSuggestions(names) {
+  const out = [], seen = new Set();
+  const add = (s) => {
+    s = String(s || "").trim();
+    if (s.length < 2) return;
+    const key = s.toLowerCase();
+    if (seen.has(key)) return;
+    if (kwList.some((k) => k.toLowerCase() === key)) return;   // already a keyword
+    seen.add(key); out.push(s);
+  };
+  for (const n of names) {
+    add(n);
+    const first = String(n || "").trim().split(/\s+/)[0];      // first-name split for multi-word names
+    if (first && first.toLowerCase() !== String(n).trim().toLowerCase()) add(first);
+  }
+  return out;
+}
+function onSelfIdentity(names) {
+  if (!names || !names.length) return;
+  // merge new names in (multiple clients may report); keep order, dedup case-insensitively
+  const have = new Set(selfNames.map((n) => n.toLowerCase()));
+  for (const n of names) { const k = String(n || "").trim(); if (k && !have.has(k.toLowerCase())) { have.add(k.toLowerCase()); selfNames.push(k); } }
+  if (!kwPromptShown && !(CFG && CFG.keyword_onboarded)) {
+    const s = keywordSuggestions(selfNames);
+    if (s.length) { kwPromptShown = true; openKeywordSetup(s, true); }
+  }
+}
+function markKeywordOnboarded() { if (CFG && !CFG.keyword_onboarded) { CFG.keyword_onboarded = true; scheduleSave(); } }
+function closeKeywordSetup() { const e = $("kwsetup"); if (e) e.remove(); }
+function openKeywordSetup(suggestions, firstRun) {
+  closeKeywordSetup();
+  let names = suggestions.slice();
+  const bg = document.createElement("div"); bg.className = "modal-bg"; bg.id = "kwsetup";
+  const card = document.createElement("div"); card.className = "modal";
+  const h = document.createElement("h3"); h.textContent = "Alert on your name";
+  const p = document.createElement("p");
+  p.textContent = "These are your Discord names. Add them as alert keywords to get pinged when someone says them in voice. Remove any you don't want.";
+  const chips = document.createElement("div"); chips.className = "kwchips";
+  function renderChips() {
+    chips.innerHTML = "";
+    if (!names.length) { const e = document.createElement("span"); e.className = "hint"; e.textContent = "No names left to add."; chips.appendChild(e); return; }
+    names.forEach((n, i) => {
+      const tag = document.createElement("span"); tag.className = "pill-tag";
+      const b = document.createElement("b"); b.textContent = n;
+      const x = document.createElement("span"); x.className = "pill-x"; x.textContent = "×";
+      x.onclick = () => { names.splice(i, 1); renderChips(); };
+      tag.append(b, x); chips.appendChild(tag);
+    });
+  }
+  renderChips();
+  const actions = document.createElement("div"); actions.className = "actions";
+  const skip = document.createElement("button"); skip.className = "sec"; skip.textContent = firstRun ? "Not now" : "Cancel";
+  skip.onclick = () => { if (firstRun) markKeywordOnboarded(); closeKeywordSetup(); };
+  const add = document.createElement("button"); add.textContent = "Add these";
+  add.onclick = () => {
+    const n = names.length;
+    names.forEach(addKw);
+    if (firstRun) markKeywordOnboarded();
+    closeKeywordSetup();
+    if (n) toast(n + " keyword" + (n === 1 ? "" : "s") + " added ✓", false);
+  };
+  actions.append(skip, add);
+  card.append(h, p, chips, actions);
+  bg.appendChild(card);
+  bg.addEventListener("click", (e) => { if (e.target === bg) { if (firstRun) markKeywordOnboarded(); closeKeywordSetup(); } });
+  document.body.appendChild(bg);
 }
 
 // ---------- auto-save + toast ----------
@@ -917,7 +1000,7 @@ const LIVE_FIELDS = new Set([
   "adv_lang", "adv_beam",                                  // language + beam size
 ]);
 // overlay-only settings: applied by re-injecting the overlay into Discord, NOT by an engine restart
-const OVERLAY_FIELDS = new Set(["o_timeout", "o_max", "o_fade", "o_minop", "o_subs", "o_log", "o_status", "o_shrink", "o_logw", "o_logh", "a_sound"]);
+const OVERLAY_FIELDS = new Set(["o_timeout", "o_max", "o_fade", "o_minop", "o_subs", "o_log", "o_status", "o_shrink", "o_merge", "o_logw", "o_logh", "a_sound"]);
 function markRestartNeeded() { if (engineRunning) $("restartbar").style.display = "flex"; }
 function clearRestartNeeded() { $("restartbar").style.display = "none"; }
 function markOverlayNeeded() { if (engineRunning) $("overlaybar").style.display = "flex"; }
@@ -1173,6 +1256,8 @@ function connectRelay() {
       speakingNow[m.client] = new Set(m.ids || []);
       const p = panels[(m.client || "").toLowerCase()];
       if (p) renderColumnRoster(p);
+    } else if (m.type === "selfIdentity") {
+      onSelfIdentity(m.names || []);
     }
   };
 }
@@ -1743,6 +1828,7 @@ const HELP = {
     preview: '<div style="display:inline-flex;align-items:center;gap:6px;background:rgba(24,25,28,.92);border:1px solid rgba(255,255,255,.1);border-radius:13px;padding:4px 11px;font:11px sans-serif;color:#e3e5e8">'
       + '<span style="width:8px;height:8px;border-radius:50%;background:#23a55a;flex:0 0 auto"></span>Listening · 2 speaking</div>' },
   o_shrink: "**Shrink quiet subtitles.** Older subtitle blocks shrink after one second without new words; the current bottom subtitle stays full size.",
+  o_merge: "**Merge consecutive subtitles.** When the same speaker starts a new sentence right after the last one, keep it in the same subtitle bubble instead of dropping the old one, so context isn't cut off mid-thought. Short lines merge readily; longer ones merge only within a brief gap. The transcript log still keeps each sentence as its own line.",
   o_logw: "Width of the in-Discord transcript log panel, in pixels (also drag-resizable by the panel's bottom-right edge).",
   o_logh: "Height of the in-Discord transcript log panel, in pixels (also drag-resizable).",
   o_timeout: "How long a subtitle stays on screen **after speech stops**, in milliseconds.",

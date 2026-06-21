@@ -34,11 +34,15 @@ DEFAULTS = {
         "fade_start_count": 5,
         "min_fade_opacity": 0.25,
         "shrink_quiet_subtitles": False,
+        "merge_subtitles": True,        # join a user's consecutive utterances into one subtitle bubble
+                                        # (within a length/time grace) so context isn't cut off; the
+                                        # transcript log still keeps each utterance as its own line
         "log_width": 360,               # in-Discord transcript log width (px, drag-resizable)
         "log_height": 300,              # in-Discord transcript log height (px, drag-resizable)
         "log_autoscroll": True,
     },
     "voice_events": True,               # emit join/leave/mute/deafen/stream events per user
+    "keyword_onboarded": False,         # set once the first-run "alert on your name" popup is dismissed/used
     "uncensor": False,                  # restore profanity Whisper self-bleeps ("f*****g" -> "fucking")
     "uncensor_words": [                 # words to un-bleep when `uncensor` is on; edit/delete here
         "motherfucker", "fucking", "fucker", "fucked", "fuck",

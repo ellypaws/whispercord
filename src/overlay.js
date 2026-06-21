@@ -14,6 +14,7 @@
   const FADE_START = OV.fade_start_count || 5;
   const MIN_FADE = OV.min_fade_opacity != null ? OV.min_fade_opacity : 0.25;
   const SHRINK_QUIET = OV.shrink_quiet_subtitles === true;
+  const MERGE_SUBS = OV.merge_subtitles !== false;   // join a user's consecutive utterances in one bubble
   const SHOW_SUBS = OV.show_subtitles !== false;     // bottom subtitle bubbles
   const SHOW_LOG = OV.show_log !== false;            // top-right transcript log panel
   const SHOW_STATUS = OV.show_status !== false;      // status pill
@@ -76,7 +77,7 @@
       font-family:gg sans,sans-serif;font-size:11px;color:#e3e5e8;pointer-events:none}
 
     .vtlog{position:fixed;top:64px;right:12px;width:360px;z-index:99999;display:flex;flex-direction:column;
-      resize:horizontal;overflow:hidden;min-width:240px;max-width:72vw;
+      resize:both;overflow:hidden;min-width:240px;max-width:72vw;min-height:140px;max-height:85vh;
       background:rgba(24,25,28,.93);border:1px solid rgba(255,255,255,.08);border-radius:10px;
       font-family:gg sans,sans-serif;color:#e3e5e8;box-shadow:0 8px 28px rgba(0,0,0,.5);pointer-events:auto}
     .vtlog-head{display:flex;align-items:center;gap:8px;padding:8px 10px;cursor:move;border-bottom:1px solid rgba(255,255,255,.07);user-select:none}
@@ -84,12 +85,14 @@
     .vtlog-head .vtstat{font-size:11px;color:#b5bac1;flex:1}
     .vtlog-btn{cursor:pointer;font-size:12px;color:#b5bac1;background:rgba(255,255,255,.06);border-radius:5px;padding:2px 7px}
     .vtlog-btn:hover{background:rgba(255,255,255,.14);color:#fff}
-    .vtlog-body{overflow-y:auto;padding:6px 10px;font-size:13px;line-height:1.4;scrollbar-width:thin;scrollbar-color:#3f4248 transparent;resize:vertical;min-height:90px}
+    .vtlog-body{overflow-y:auto;padding:6px 10px;font-size:13px;line-height:1.4;scrollbar-width:thin;scrollbar-color:#3f4248 transparent;flex:1 1 auto;min-height:0}
     .vtlog-body::-webkit-scrollbar{width:10px}
     .vtlog-body::-webkit-scrollbar-track{background:transparent}
     .vtlog-body::-webkit-scrollbar-thumb{background:#3f4248;border-radius:8px;border:2px solid transparent;background-clip:padding-box}
     .vtlog-body::-webkit-scrollbar-thumb:hover{background:#4f535b;background-clip:padding-box}
     .vtlog.collapsed .vtlog-body,.vtlog.collapsed .vtlog-jump{display:none}
+    .vtlog.collapsed{height:auto!important;min-height:0;resize:none}
+    .vtlog.collapsed .vtlog-head{border-bottom:0}
     .vtlog-jump{position:absolute;bottom:10px;left:50%;transform:translateX(-50%);cursor:pointer;display:none;
       background:#5865f2;color:#fff;font-size:11px;font-weight:600;border-radius:999px;padding:4px 11px;box-shadow:0 2px 10px rgba(0,0,0,.5)}
     .vtl{display:flex;align-items:flex-start;gap:6px;margin:4px 0;padding-left:6px;border-left:2px solid transparent}
@@ -265,7 +268,16 @@
   function sub(uid, name, avatar, text, isFinal) {
     if (!SHOW_SUBS) return;
     let b = blocks.get(uid);
-    if (b && b.finalized) { removeBlk(uid); b = null; }
+    if (b && b.finalized) {
+      // A previous utterance for this speaker ended. Either MERGE the new one onto it (keep the
+      // last bubble's context instead of yanking it) or start fresh, based on how soon the new
+      // utterance arrives and how much we've already gathered. Shorter so far -> longer grace (join
+      // eagerly); longer -> only a brief grace; past a cap -> always start fresh.
+      const gap = Date.now() - (b.finalizedAt || 0);
+      const grace = Math.max(1500, 5000 - (b.committed || "").length * 25);
+      if (MERGE_SUBS && gap <= grace && (b.committed || "").length <= 280) b.finalized = false;  // continue same bubble
+      else { removeBlk(uid); b = null; }
+    }
     if (!b) {
       while (order.length >= MAX_BLOCKS) removeBlk(order[0]);
       const el = document.createElement("div"); el.className = "vt-entry";
@@ -276,15 +288,18 @@
       const body = document.createElement("span");
       const cur = document.createElement("span"); cur.className = "vt-cursor"; cur.textContent = "▍";
       t.append(nm, body, cur); el.append(img, t); container.appendChild(el);
-      b = { el, body, cur, nm, img, timeout: null, finalized: false, alerted: false, lastActive: 0 }; blocks.set(uid, b); order.push(uid);
+      b = { el, body, cur, nm, img, timeout: null, finalized: false, alerted: false, lastActive: 0, committed: "", finalizedAt: 0 }; blocks.set(uid, b); order.push(uid);
     }
     touchBlock(uid, b);
     if (name) b.nm.textContent = name;
     if (avatar && b.img && !b.img.src) b.img.src = avatar;
-    b.text = text || "";
-    const kw = matchKeyword(text);
-    setText(b.body, text || "", kw);
+    // committed = earlier finalized utterances in this merge run; live = the in-progress one
+    const shown = ((b.committed ? b.committed + " " : "") + (text || "")).trim();
+    b.text = shown;
+    const kw = matchKeyword(shown);
+    setText(b.body, shown, kw);
     if (kw && !b.alerted) { b.alerted = true; b.el.classList.add("vt-alert"); beep(); }
+    if (isFinal) { b.committed = shown; b.finalizedAt = Date.now(); }   // fold this utterance into the run
     b.finalized = !!isFinal; b.cur.style.display = b.finalized ? "none" : "inline-block";
     if (b.timeout) clearTimeout(b.timeout);
     b.timeout = setTimeout(() => removeBlk(uid), LIVE_MS);
@@ -303,8 +318,8 @@
   const logJump = panel.querySelector(".vtlog-jump");
   const hstat = panel.querySelector("[data-hstat]"), htext = panel.querySelector("[data-htext]");
   const history = [];
-  panel.style.width = LOG_W + "px";                     // configurable, drag-resizable (width)
-  logBody.style.height = LOG_H + "px";                  // configurable, drag-resizable (height)
+  panel.style.width = LOG_W + "px";                     // configurable; panel is drag-resizable (both axes)
+  panel.style.height = (LOG_H + 38) + "px";             // +head; body flexes to fill, so height drag works
   let pinned = true, lastAuto = 0, jumpTimer = null;
   const atBottom = () => logBody.scrollHeight - logBody.scrollTop - logBody.clientHeight < 28;
   const stickLog = () => {                               // scroll to bottom, then re-apply next frame
@@ -491,7 +506,14 @@
     if (m.type !== "transcript") return;
     if (m.isFinal && !m.text) {        // utterance cut off with nothing to show -> expire it promptly
       const b = blocks.get(m.userId);
-      if (b) { b.finalized = true; if (b.timeout) clearTimeout(b.timeout); b.timeout = setTimeout(() => removeBlk(m.userId), 400); }
+      // ...but if we've merged real text already, keep it around (and mergeable) for the normal
+      // lifetime instead of wiping a populated bubble in 400 ms.
+      if (b) {
+        b.finalized = true; b.finalizedAt = Date.now();
+        if (b.timeout) clearTimeout(b.timeout);
+        const keep = MERGE_SUBS && (b.committed || "").length > 0;
+        b.timeout = setTimeout(() => removeBlk(m.userId), keep ? LIVE_MS : 400);
+      }
       return;
     }
     const d = speakerDisplay(m);

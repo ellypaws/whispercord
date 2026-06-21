@@ -143,7 +143,7 @@ def _bind(lib):
     lib.whisper_full_get_token_p.argtypes = [p, C.c_int, C.c_int]
     lib.whisper_free.restype = None
     lib.whisper_free.argtypes = [p]
-    # Language auto-detection (optional — guarded so a DLL without these symbols still loads).
+    # Language auto-detection (optional; guarded so a DLL without these symbols still loads).
     try:
         lib.whisper_pcm_to_mel.restype = C.c_int
         lib.whisper_pcm_to_mel.argtypes = [p, C.POINTER(C.c_float), C.c_int, C.c_int]
