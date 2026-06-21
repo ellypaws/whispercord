@@ -1,11 +1,38 @@
-"""Single source of truth for the packaged app version, plus a tiny semver compare.
+"""App version, resolved from a single source of truth: the git tag.
 
-Keep __version__ in step with the release tag (the CI names the exe from the tag) and
-with native-ui/DiscordTranscriber.Native.csproj <Version> when cutting a release.
+You no longer hand-bump a version anywhere. The release workflow rewrites `_STAMP` below from the
+pushed tag right before it builds the exe, so a frozen build carries that exact version. In a dev
+checkout `_STAMP` is left at the sentinel and the version is derived from `git describe` instead, so
+it's never stale. To cut a release you only create the tag (e.g. `git tag v0.2.6 && git push --tags`).
 """
-__version__ = "0.2.5"
+import os, sys, subprocess
 
 GITHUB_REPO = "ellypaws/whispercord"
+
+_STAMP = "0.0.0-dev"   # release CI rewrites THIS line from the tag; do not bump by hand
+
+
+def _resolve_version():
+    # explicit override wins (handy for one-off local frozen builds)
+    env = (os.environ.get("WHISPERCORD_VERSION") or "").strip()
+    if env:
+        return env.lstrip("vV")
+    if _STAMP != "0.0.0-dev":
+        return _STAMP                       # a stamped release build
+    if not getattr(sys, "frozen", False):   # dev checkout: derive from git so it tracks the tag
+        try:
+            out = subprocess.check_output(
+                ["git", "describe", "--tags", "--always", "--dirty"],
+                cwd=os.path.dirname(os.path.abspath(__file__)),
+                stderr=subprocess.DEVNULL, text=True).strip()
+            if out:
+                return out.lstrip("vV")
+        except Exception:
+            pass
+    return _STAMP
+
+
+__version__ = _resolve_version()
 
 
 def _tuple(s):
@@ -16,6 +43,6 @@ def _tuple(s):
     return tuple(out)
 
 
-def is_newer(latest, current=__version__):
-    """True when `latest` is a strictly higher version than `current`."""
-    return _tuple(latest) > _tuple(current)
+def is_newer(latest, current=None):
+    """True when `latest` is a strictly higher version than `current` (default: this build)."""
+    return _tuple(latest) > _tuple(current if current is not None else __version__)
