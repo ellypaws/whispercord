@@ -8,6 +8,13 @@
   :root { --bg:#1e1f22; --panel:#2b2d31; --panel2:#313338; --line:#3f4248;
           --txt:#dbdee1; --mut:#949ba4; --accent:#5865f2; --good:#23a55a; --bad:#f23f43; --warn:#f0b232; }
   * { box-sizing:border-box; }
+  /* dark, theme-matched scrollbars everywhere (no more out-of-place white track) */
+  * { scrollbar-width:thin; scrollbar-color:#3f4248 transparent; }
+  ::-webkit-scrollbar { width:10px; height:10px; }
+  ::-webkit-scrollbar-track { background:transparent; }
+  ::-webkit-scrollbar-thumb { background:#3f4248; border-radius:8px; border:2px solid transparent; background-clip:padding-box; }
+  ::-webkit-scrollbar-thumb:hover { background:#4f535b; background-clip:padding-box; }
+  ::-webkit-scrollbar-corner { background:transparent; }
   html, body { height:100%; }
   body { margin:0; font:13px/1.45 "gg sans",Segoe UI,system-ui,sans-serif; background:var(--bg); color:var(--txt);
          display:flex; flex-direction:column; height:100vh; overflow:hidden; }
@@ -144,6 +151,19 @@
                border-bottom:1px solid var(--accent); padding:8px 14px; flex:0 0 auto; font-size:12px; color:var(--txt); }
   .updatebar .grow { flex:1; }
   .updatebar button { padding:5px 12px; }
+  /* overlay re-inject bar (separate from restarting the engine) */
+  .overlaybar { display:flex; align-items:center; gap:10px; background:rgba(88,101,242,.12);
+                border-bottom:1px solid var(--accent); padding:8px 14px; flex:0 0 auto; font-size:12px; color:var(--txt); }
+  .overlaybar .grow { flex:1; }
+  .overlaybar button { padding:5px 12px; }
+  /* dismissable name-resolution reminders */
+  #reminders { display:flex; flex-direction:column; flex:0 0 auto; }
+  .reminder { display:flex; align-items:center; gap:10px; background:rgba(240,178,50,.10);
+              border-bottom:1px solid rgba(240,178,50,.4); padding:7px 14px; font-size:12px; color:var(--txt); }
+  .reminder .grow { flex:1; }
+  .reminder button { padding:4px 10px; }
+  .reminder .rx { cursor:pointer; color:var(--mut); padding:1px 7px; border-radius:4px; font-size:14px; line-height:1; }
+  .reminder .rx:hover { color:var(--txt); background:rgba(255,255,255,.08); }
   .lu { width:15px; height:15px; vertical-align:-3px; flex:0 0 auto; }
   button .lu { vertical-align:-3px; margin-right:4px; }
   /* circled (i) help + markdown popover */
@@ -199,13 +219,21 @@
 </div>
 
 <div id="restartbar" class="restartbar" style="display:none">
-  <span id="restartbar-text">Settings changed — restart the engine to apply.</span>
+  <span id="restartbar-text">Engine settings changed — restart the engine to apply.</span>
   <span class="grow"></span>
   <button id="restartbar-btn">Restart engine</button>
 </div>
 
+<div id="overlaybar" class="overlaybar" style="display:none">
+  <span id="overlaybar-text">Overlay settings changed — restart the overlay to apply.</span>
+  <span class="grow"></span>
+  <button id="overlaybar-btn">Restart overlay</button>
+</div>
+
+<div id="reminders"></div>
+
 <div class="tabs">
-  <div class="tab active" data-v="live">Live</div>
+  <div class="tab active" data-v="live">Transcript</div>
   <div class="tab" data-v="settings">Settings</div>
   <div class="tab" data-v="log">Console</div>
 </div>
@@ -256,7 +284,7 @@
     </div>
 
     <div class="card">
-      <h2>Subtitle overlay (per client)</h2>
+      <h2>Subtitle overlay</h2>
       <div id="overlay_clients"><div class="hint">No Discord clients detected yet.</div></div>
       <div class="hint">Toggle the in-Discord subtitle overlay per client. Applies on engine restart.</div>
     </div>

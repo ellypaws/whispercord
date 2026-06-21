@@ -127,7 +127,8 @@ function setInject(exe, on) {
   let v = CFG.inject_overlay;
   if (!v || typeof v !== "object") v = {};
   v = Object.assign({}, v); v[exe] = on; CFG.inject_overlay = v;
-  API.save_config(CFG); toast("Overlay " + (on ? "on" : "off") + " — restart engine to apply", false);
+  API.save_config(CFG); pushLiveConfig(CFG); markOverlayNeeded();
+  toast("Overlay " + (on ? "on" : "off") + " for " + exe, false);
 }
 function selfFor(exe) {
   const cl = ((CFG && CFG.self_transcribe) || {}).clients || {};
@@ -158,12 +159,12 @@ function renderToggleList(boxId, isOn, set) {
 }
 
 // ---------- tabs ----------
-document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () => {
-  document.querySelectorAll(".tab").forEach((x) => x.classList.remove("active"));
+function activateTab(v) {
+  document.querySelectorAll(".tab").forEach((x) => x.classList.toggle("active", x.dataset.v === v));
   document.querySelectorAll(".view").forEach((x) => x.classList.remove("active"));
-  t.classList.add("active");
-  $("v-" + t.dataset.v).classList.add("active");
-}));
+  const view = $("v-" + v); if (view) view.classList.add("active");
+}
+document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () => activateTab(t.dataset.v)));
 
 // ---------- config form ----------
 let kwList = [];
@@ -315,7 +316,9 @@ function initAutosave() {
     if (e.target.id === "adv_device") refreshGpu();
     if (e.target.id === "whisper_model") refreshModels();
     scheduleSave();
-    if (!LIVE_FIELDS.has(e.target.id)) markRestartNeeded();   // engine setting changed -> prompt restart
+    if (LIVE_FIELDS.has(e.target.id)) return;                 // applies live, no prompt
+    if (OVERLAY_FIELDS.has(e.target.id)) markOverlayNeeded();  // overlay-only -> re-inject, not engine restart
+    else markRestartNeeded();                                 // engine setting changed -> prompt restart
   };
   v.addEventListener("input", onChange);
   v.addEventListener("change", onChange);
@@ -330,13 +333,28 @@ const LIVE_FIELDS = new Set([
   "g_dbfs", "g_vad", "g_reqspeak", "g_drop",               // silence gating
   "adv_lang", "adv_beam",                                  // language + beam size
 ]);
+// overlay-only settings: applied by re-injecting the overlay into Discord, NOT by an engine restart
+const OVERLAY_FIELDS = new Set(["o_timeout", "o_max", "o_fade", "o_minop", "o_logh", "a_sound"]);
 function markRestartNeeded() { if (engineRunning) $("restartbar").style.display = "flex"; }
 function clearRestartNeeded() { $("restartbar").style.display = "none"; }
+function markOverlayNeeded() { if (engineRunning) $("overlaybar").style.display = "flex"; }
+function clearOverlayNeeded() { $("overlaybar").style.display = "none"; }
+
+// Re-inject the overlay into Discord with the current settings, without stopping the engine.
+async function reinjectOverlay(btn) {
+  if (btn) btn.disabled = true;
+  clearOverlayNeeded();
+  toast("Restarting overlay…", true);
+  try { pushLiveConfig(readForm()); } catch (e) {}     // make sure the engine has the latest overlay config
+  try { if (relay && relay.readyState === 1) relay.send(JSON.stringify({ type: "reinjectOverlay" })); } catch (e) {}
+  setTimeout(() => { toast("Overlay restarted ✓", false); if (btn) btn.disabled = false; }, 700);
+}
+$("overlaybar-btn").addEventListener("click", () => reinjectOverlay($("overlaybar-btn")));
 
 async function restartEngine(btn) {
   if (btn) btn.disabled = true;
   toast("Restarting engine…", true);
-  clearRestartNeeded();
+  clearRestartNeeded(); clearOverlayNeeded();   // a full restart re-injects the overlay too
   try { await API.stop_backend(); await API.start_backend(); } catch (e) {}
   showProgress({ active: true, done: false, pct: null, label: "Restarting engine…" });
   setTimeout(() => { refreshEngine(); connectRelay(); refreshModels(); toast("Engine restarted ✓", false); if (btn) btn.disabled = false; }, 1300);
@@ -368,8 +386,58 @@ $("updatebar-ignore").addEventListener("click", () => { $("updatebar").style.dis
 let clientList = [];
 let engineStatus = {};        // exe -> {hooked, cdp, streams, active, mapped} from the engine heartbeat
 let engineRunning = false;    // last known engine state (drives the "restart to apply" bar)
+const dismissedReminders = new Set();   // reminder keys the user closed this session
 
 async function refreshClients() { clientList = await API.list_clients(); renderClients(); }
+
+// Dismissable nudges explaining why names may show as "user 1a2b3" — a client without a connected
+// debug port can't resolve names. Only shown while the engine is running (i.e. actually capturing).
+function renderReminders() {
+  const box = $("reminders"); if (!box) return;
+  const active = [];
+  if (engineRunning) {
+    for (const c of clientList) {
+      const es = engineStatus[c.exe];
+      const capturingNoNames = es && es.hooked && !es.cdp;   // capturing this client but no CDP -> no names
+      const runningNoPort = c.running && !c.live;            // running without a debug port at all
+      const onScreenNeeded = es && es.hooked && es.cdp && es.active > 0 && !es.mapped;   // connected but nothing resolves
+      if (capturingNoNames || runningNoPort) {
+        active.push({
+          key: "noport:" + c.folder, folder: c.folder, fix: true,
+          text: clientLabel(c.exe) + " has no debug port connected, so its speakers show as “user 1a2b3”. "
+              + "Restart it with its port to resolve names (briefly drops its current call).",
+        });
+      } else if (onScreenNeeded) {
+        active.push({
+          key: "onscreen:" + c.folder, folder: c.folder, fix: false,
+          text: clientLabel(c.exe) + " is connected but isn't resolving any names. Keep its voice call "
+              + "visible on screen — name lookup reads the on-screen voice panel.",
+        });
+      }
+    }
+  }
+  // forget dismissals once their condition clears, so a later recurrence shows again
+  const activeKeys = new Set(active.map((a) => a.key));
+  for (const k of [...dismissedReminders]) if (!activeKeys.has(k)) dismissedReminders.delete(k);
+
+  box.innerHTML = "";
+  for (const r of active) {
+    if (dismissedReminders.has(r.key)) continue;
+    const row = document.createElement("div"); row.className = "reminder";
+    const tx = document.createElement("span"); tx.textContent = r.text;
+    const grow = document.createElement("span"); grow.className = "grow";
+    row.append(tx, grow);
+    if (r.fix) {
+      const fix = document.createElement("button"); fix.className = "sec"; fix.textContent = "Restart w/ port";
+      fix.onclick = async () => { fix.disabled = true; fix.textContent = "…"; try { await API.ensure_client(r.folder, true); } catch (e) {} setTimeout(refreshClients, 1500); };
+      row.append(fix);
+    }
+    const x = document.createElement("span"); x.className = "rx"; x.textContent = "×"; x.title = "Dismiss";
+    x.onclick = () => { dismissedReminders.add(r.key); renderReminders(); };
+    row.append(x);
+    box.appendChild(row);
+  }
+}
 
 function renderClients() {
   const box = $("clients");
@@ -383,11 +451,11 @@ function renderClients() {
     if (hooked) {
       dot = "good";
       label = `attached ✓ · ${streams} stream${streams === 1 ? "" : "s"}`;
-      tip = cdp ? `Hooked + names resolving via CDP (${mapped} mapped).`
+      tip = cdp ? `Hooked + names resolving via CDP on port ${c.port} (${mapped} mapped).`
                 : "Audio hooked, but NO debug port — names stay as “user …”. Use Restart w/ port.";
     } else if (c.live) {
-      dot = "info"; label = "debug port ready";
-      tip = "Debug port open. Will attach once you Start the engine and a call is active.";
+      dot = "info"; label = `debug port ${c.port} ready`;
+      tip = `Debug port ${c.port} open. Will attach once you Start the engine and a call is active.`;
     } else if (c.running) {
       dot = "warn"; label = "running — no debug port";
       tip = "Capture works but names won't resolve. Restart w/ port enables names (closes the current call).";
@@ -400,17 +468,22 @@ function renderClients() {
     row.innerHTML = `<span class="cdot ${dot}"></span><span class="nm">${c.folder}</span><span class="st">${label}</span>`;
     const btn = document.createElement("button");
     btn.className = "sec";
-    btn.textContent = c.live ? "Relaunch" : (c.running ? "Restart w/ port" : "Launch");
-    btn.onclick = async () => {
-      btn.disabled = true; btn.textContent = "…";
-      await API.ensure_client(c.folder, c.running && !c.live);
-      setTimeout(refreshClients, 1500);
-    };
+    if (c.live) {                                     // debug port already connected -> nothing to do
+      btn.textContent = "Ready"; btn.disabled = true;
+    } else {
+      btn.textContent = c.running ? "Restart w/ port" : "Launch";
+      btn.onclick = async () => {
+        btn.disabled = true; btn.textContent = "…";
+        await API.ensure_client(c.folder, c.running && !c.live);
+        setTimeout(refreshClients, 1500);
+      };
+    }
     row.appendChild(btn);
     box.appendChild(row);
   }
   renderToggleList("overlay_clients", injectFor, setInject);
   renderToggleList("self_clients", selfFor, setSelf);
+  renderReminders();
 }
 
 // ---------- engine start/stop ----------
@@ -421,10 +494,13 @@ async function refreshEngine() {
   $("bstat").textContent = running ? "engine running" : "stopped";
   $("startbtn").disabled = running;
   $("stopbtn").disabled = !running;
-  if (!running) clearRestartNeeded();        // nothing to restart while stopped
+  if (!running) { clearRestartNeeded(); clearOverlayNeeded(); }   // nothing to apply while stopped
+  renderReminders();                          // reflect engine state in the name-resolution nudges
 }
+let startedOnce = false;
 $("startbtn").addEventListener("click", async () => {
   $("startbtn").disabled = true;
+  if (!startedOnce) { startedOnce = true; activateTab("live"); }  // first Start -> jump to the Transcript view
   showProgress({ active: true, done: false, pct: null, label: "Starting engine…" });
   await API.start_backend();
   setTimeout(refreshEngine, 800);

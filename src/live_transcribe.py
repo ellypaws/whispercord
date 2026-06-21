@@ -126,6 +126,7 @@ self_gate = {}                                 # client -> bool: capture my mic 
 corr = collections.defaultdict(dict)           # src -> {uid: co-occurrence score} for speaker binding
 bind_votes = collections.defaultdict(lambda: collections.defaultdict(float))  # src -> {uid: naming votes}
 lock = threading.Lock()
+reinject_event = threading.Event()             # set by the relay when the UI asks to re-inject overlays
 
 
 def kind_of(src):
@@ -153,6 +154,10 @@ def apply_live_config(cfg):
     try:
         if "voice_events" in cfg:
             CFG["voice_events"] = bool(cfg["voice_events"])   # mapping_thread reads this each pass
+        # overlay/alert/inject prefs: keep CFG fresh so the next overlay re-inject uses them
+        for k in ("overlay", "alerts", "inject_overlay"):
+            if k in cfg:
+                CFG[k] = cfg[k]
         CAP = cfg.get("capture") or CAP
         CAP_VOICE = CAP.get("voice", True); CAP_SCREEN = CAP.get("screenshare", True)
         SCREEN_LABEL = CAP.get("screenshare_label", SCREEN_LABEL)
@@ -372,6 +377,8 @@ def start_relay():
                     broadcast({"type": "keywords", "keywords": kws})
                 elif obj.get("type") == "setConfig":
                     apply_live_config(obj.get("config") or {})    # live-apply restart-free settings
+                elif obj.get("type") == "reinjectOverlay":
+                    reinject_event.set()                          # re-inject overlays without an engine restart
         except Exception:
             pass
         finally:
@@ -438,7 +445,7 @@ def _client_from_url(url):
 
 
 def mapping_thread():
-    from cdp import CDP, speaking_users, user_info, self_state, voice_states, ssrc_map
+    from cdp import CDP, speaking_users, user_info, self_state, voice_states, ssrc_map, cleanup_overlay
     from launch import CLIENTS
     port2client = {port: exe.lower() for _, (exe, port) in CLIENTS.items()}  # 9223 -> 'discordptb.exe'
 
@@ -565,6 +572,18 @@ def mapping_thread():
         if now - last_probe > 3:                # re-probe for newly-opened ports (e.g. you restarted Canary)
             last_probe = now
             try_connect()
+        if reinject_event.is_set():             # UI asked to re-inject overlays (no engine restart)
+            reinject_event.clear()
+            for _port, _st in list(conns.items()):
+                _cl, _cc = _st["client"], _st["cdp"]
+                try:
+                    if master_inject and inject_for(_cl):
+                        inject_overlay(_cc, _cl); injected.add(_cl)
+                    else:
+                        cleanup_overlay(_cc); injected.discard(_cl)
+                except Exception as e:
+                    print("[overlay] reinject failed (%s): %s" % (_cl, e))
+            print("[overlay] re-injected on request")
         # Correlate INDEPENDENTLY per client: a stream from client X can only ever bind
         # to a speaker reported by client X's own CDP. No cross-client leakage.
         for port, st0 in list(conns.items()):
