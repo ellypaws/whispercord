@@ -44,21 +44,24 @@
   #v-settings.active, #v-speakers.active { display:block; overflow-y:auto; }
   .card { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:14px; margin-bottom:12px; }
   .card h2 { font-size:12px; text-transform:uppercase; letter-spacing:.6px; color:var(--mut); margin:0 0 10px; }
-  .row { display:flex; align-items:center; gap:10px; margin:8px 0; }
-  .row > label { width:190px; color:var(--mut); }
-  .row > label.switch { width:38px; }   /* a toggle switch in a settings row keeps its own size */
+  .row { display:grid; grid-template-columns:160px minmax(0,1fr) auto; align-items:center; gap:10px; margin:8px 0; }
+  .row > label { color:var(--mut); }
+  .row > label.switch { grid-column:2; width:38px; justify-self:start; }   /* switches sit near their labels */
   input[type=text],input[type=number],select { background:var(--panel2); border:1px solid var(--line);
            color:var(--txt); border-radius:5px; padding:6px 8px; font:inherit; flex:1; min-width:0; }
-  input[type=range] { flex:1; }
-  .hint { color:var(--mut); font-size:11px; margin-left:200px; margin-top:-4px; }
+  .row > input[type=text], .row > input[type=number], .row > select, .row > .pillbox { grid-column:2 / -1; width:100%; }
+  .row > input[type=color] { grid-column:2; justify-self:start; }
+  input[type=range] { width:100%; min-width:0; }
+  .hint { color:var(--mut); font-size:11px; margin-left:170px; margin-top:-4px; }
   .clientrow { display:flex; align-items:center; gap:10px; padding:8px 0; border-top:1px solid var(--line); }
   .clientrow:first-child { border-top:0; }
   .clientrow .nm { width:150px; font-weight:600; }
   .clientrow .st { flex:1; color:var(--mut); font-size:12px; }
-  .clientrow .cdot { width:9px; height:9px; border-radius:50%; flex:0 0 auto; background:#5c5e66; }
+  .clientrow .cdot, .toggrow .cdot { width:9px; height:9px; border-radius:50%; flex:0 0 auto; background:#5c5e66; }
   .cdot.good { background:var(--good); box-shadow:0 0 6px var(--good); }
   .cdot.warn { background:var(--warn); }
   .cdot.info { background:var(--accent); }
+  .cdot.bad { background:var(--bad); }
   .cdot.off { background:#5c5e66; }
   /* styled toggle switch */
   .switch { position:relative; display:inline-block; width:38px; height:20px; flex:0 0 auto; }
@@ -68,8 +71,11 @@
   .switch input:checked + .sl { background:var(--good); }
   .switch input:checked + .sl::before { transform:translateX(18px); }
   .subhead { color:var(--mut); font-size:11px; text-transform:uppercase; letter-spacing:.4px; margin:10px 0 2px; }
-  .toggrow { display:flex; align-items:center; gap:10px; padding:6px 0; }
-  .toggrow .nm { flex:1; }
+  .toggrow { display:grid; grid-template-columns:150px 38px; justify-content:start; align-items:center; gap:10px; padding:6px 0; }
+  .toggrow.overlayrow { grid-template-columns:150px 38px 9px minmax(118px, 190px); }
+  .toggrow .nm { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .toggrow .switch { justify-self:start; }
+  .toggrow .st { min-width:0; color:var(--mut); font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .toggrow .sub { color:var(--mut); font-size:11px; }
   #log { background:#111214; border:1px solid var(--line); border-radius:8px; padding:10px;
          flex:1; min-height:0; overflow:auto; font:11px/1.4 ui-monospace,Consolas,monospace; color:#b5bac1; white-space:pre-wrap; }
@@ -366,10 +372,8 @@
       <h2>Display</h2>
       <div class="row"><label>Show voice events</label>
         <label class="switch"><input type="checkbox" id="ui_events" /><span class="sl"></span></label></div>
-      <div class="hint">Join/leave, mute, deafen, stream start/stop per user.</div>
       <div class="row"><label>Newest on top</label>
         <label class="switch"><input type="checkbox" id="ui_newtop" /><span class="sl"></span></label></div>
-      <div class="hint">Off = newest lines appear at the bottom (classic chat). On = newest pops in at the top.</div>
       <div class="row"><label>Show timestamps</label>
         <label class="switch"><input type="checkbox" id="ui_ts" /><span class="sl"></span></label></div>
       <div class="row"><label>Timestamp format</label>
@@ -381,7 +385,6 @@
       <h2>Alerts</h2>
       <div class="row"><label>Keywords</label>
         <div id="kw" class="pillbox"><input id="kw-input" type="text" placeholder="type a word, press Enter" /></div></div>
-      <div class="hint">Red highlight + beep when spoken (e.g. your name).</div>
       <div class="row"><label>Play sound</label>
         <label class="switch"><input type="checkbox" id="a_sound" /><span class="sl"></span></label></div>
       <div class="row"><label>Highlight color</label>
@@ -391,7 +394,6 @@
     <div class="card">
       <h2>Subtitle overlay</h2>
       <div id="overlay_clients"><div class="hint">No Discord clients detected yet.</div></div>
-      <div class="hint">Toggle the in-Discord subtitle overlay per client. Applies on engine restart.</div>
     </div>
 
     <div class="card">
@@ -402,7 +404,6 @@
         <label class="switch"><input type="checkbox" id="self_unmute" /><span class="sl"></span></label></div>
       <div class="row"><label>Only when Discord says I'm speaking</label>
         <label class="switch"><input type="checkbox" id="self_vad" /><span class="sl"></span></label></div>
-      <div class="hint">Uses Discord's own noise gate/VAD + mute state per client, so it won't transcribe room noise the way a raw mic would.</div>
       <div class="row"><label>Input device</label>
         <select id="self_device"><option value="">System default</option></select></div>
       <div class="subhead">Apply to clients</div>
@@ -433,7 +434,6 @@
         </select></div>
       <div class="row"><label>Transcribe stream audio</label>
         <label class="switch"><input type="checkbox" id="cap_screen" /><span class="sl"></span></label></div>
-      <div class="hint">Transcribe Go Live / screenshare audio (game, music, video). Off = only people's voices.</div>
       <div class="hint" id="gpuhint"></div>
     </div>
 
@@ -442,12 +442,10 @@
       <div class="row"><label>Min loudness (dBFS)</label>
         <input type="range" id="g_dbfs" min="-70" max="-30" step="1" />
         <span id="g_dbfs_v" style="width:46px;text-align:right"></span></div>
-      <div class="hint">Higher = gate more aggressively (kills "Thank you." on near-silence).</div>
       <div class="row"><label>Silero VAD</label>
         <label class="switch"><input type="checkbox" id="g_vad" /><span class="sl"></span></label></div>
       <div class="row"><label>End when not speaking</label>
         <label class="switch"><input type="checkbox" id="g_reqspeak" /><span class="sl"></span></label></div>
-      <div class="hint">End an utterance once Discord's speaking indicator goes quiet. Off = segment by audio only (turn off if speech is being split into too many lines).</div>
       <div class="row"><label>Drop phrases</label>
         <input type="text" id="g_drop" placeholder="thank you, bye, you" /></div>
       <div class="row"><label>Uncensor profanity</label>
@@ -470,10 +468,8 @@
     <details class="card">
       <summary>Advanced</summary>
       <div class="row"><label>Beam size</label><input type="number" id="adv_beam" min="1" max="10" /></div>
-      <div class="hint">1 = greedy &amp; fastest; higher = more accurate, slower.</div>
       <div class="row"><label>Device</label>
         <select id="adv_device"><option value="auto">auto (detect)</option><option value="cuda">cuda (NVIDIA GPU)</option><option value="cpu">cpu</option></select></div>
-      <div class="hint">auto picks the best available: NVIDIA→cuda, else cpu. (AMD/Intel GPU acceleration via hip/vulkan is coming; for now non-NVIDIA runs on cpu.)</div>
       <div class="row"><label>Compute type</label>
         <select id="adv_compute"><option>float16</option><option>int8_float16</option><option>int8</option><option>float32</option></select></div>
       <div class="row"><label>Relay port</label><input type="number" id="adv_relay" /></div>

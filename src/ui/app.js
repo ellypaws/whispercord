@@ -624,6 +624,7 @@ function setInject(exe, on) {
   if (!v || typeof v !== "object") v = {};
   v = Object.assign({}, v); v[exe] = on; CFG.inject_overlay = v;
   API.save_config(CFG); pushLiveConfig(CFG); markOverlayNeeded();
+  renderClients();
   toast("Overlay " + (on ? "on" : "off") + " for " + exe, false);
 }
 function selfFor(exe) {
@@ -640,6 +641,56 @@ function makeSwitch(checked, onChange) {
   lab.innerHTML = `<input type="checkbox" ${checked ? "checked" : ""}><span class="sl"></span>`;
   lab.querySelector("input").addEventListener("change", (e) => onChange(e.target.checked));
   return lab;
+}
+function overlayInfo(c) {
+  const enabled = injectFor(c.exe);
+  const es = engineStatus[c.exe] || {};
+  const ov = es.overlay || {};
+  if (!enabled) {
+    if (engineRunning && ov.state === "attached") {
+      return { dot: "warn", label: "detach pending", tip: "Overlay is still attached until you restart the overlay." };
+    }
+    return { dot: "off", label: "off", tip: "Overlay disabled for this client." };
+  }
+  if (!engineRunning) {
+    return { dot: "off", label: "starts with engine", tip: "Start the engine to attach the overlay." };
+  }
+  if (ov.state === "attached") {
+    return { dot: "good", label: "attached", tip: "Overlay is attached to this Discord client." };
+  }
+  if (ov.state === "attaching") {
+    return { dot: "info", label: "attaching", tip: "Overlay injection is in progress." };
+  }
+  if (ov.state === "reloading") {
+    return { dot: "info", label: "reloading", tip: "Overlay is being re-injected with the latest settings." };
+  }
+  if (ov.state === "failed") {
+    return { dot: "bad", label: "failed", tip: ov.detail || "Overlay injection failed." };
+  }
+  if (ov.state === "disabled") {
+    return { dot: "warn", label: "attach pending", tip: "Overlay is enabled here; restart the overlay to attach it." };
+  }
+  if (es.cdp || c.live) {
+    return { dot: "info", label: "ready", tip: "Debug port is connected; the overlay will attach when the engine applies it." };
+  }
+  if (c.running) {
+    return { dot: "warn", label: "waiting for port", tip: "Restart this client with its debug port before the overlay can attach." };
+  }
+  return { dot: "off", label: "waiting for client", tip: "Launch this Discord client before attaching the overlay." };
+}
+function renderOverlayClients() {
+  const box = $("overlay_clients");
+  if (!clientList.length) { box.innerHTML = '<div class="hint">No Discord clients detected yet.</div>'; return; }
+  box.innerHTML = "";
+  for (const c of clientList) {
+    const info = overlayInfo(c);
+    const row = document.createElement("div"); row.className = "toggrow overlayrow"; row.title = info.tip;
+    const nm = document.createElement("span"); nm.className = "nm"; nm.textContent = c.folder;
+    const dot = document.createElement("span"); dot.className = "cdot " + info.dot;
+    const st = document.createElement("span"); st.className = "st"; st.textContent = info.label;
+    row.append(nm, makeSwitch(injectFor(c.exe), (on) => setInject(c.exe, on)), dot, st);
+    box.appendChild(row);
+  }
 }
 function renderToggleList(boxId, isOn, set) {
   const box = $(boxId);
@@ -983,7 +1034,7 @@ function renderClients() {
     row.appendChild(btn);
     box.appendChild(row);
   }
-  renderToggleList("overlay_clients", injectFor, setInject);
+  renderOverlayClients();
   renderToggleList("self_clients", selfFor, setSelf);
   renderReminders();
 }
@@ -1627,9 +1678,9 @@ const HELP = {
   whisper_model: "**Speech model.** Bigger = more accurate, slower, more VRAM.\n- `tiny`/`base` - fastest, rough\n- `small` - good balance (default)\n- `medium`/`large-v3` - best accuracy (needs a strong GPU)\n\nModels download once and are reused - switching back never re-downloads.",
   adv_lang: "**Language.** `Auto-detect` lets Whisper guess per utterance. Pin a language to stop it switching mid-call and to speed things up slightly.",
   cap_screen: "**Transcribe stream audio.** Include Go Live / screenshare audio (game, music, video) in transcription. Off = only people's microphones. Applies live, no restart.",
-  self_en: "**Transcribe your own microphone** in addition to everyone else's audio. Uses your mic, gated by Discord's own mute/VAD state below.",
-  self_unmute: "Only capture your mic while you are **unmuted in Discord**. Off = transcribe even when self-muted.",
-  self_vad: "Only capture your mic when **Discord's voice activity** says you're speaking - avoids transcribing background room noise.",
+  self_en: "**Transcribe your own microphone** in addition to everyone else's audio. Uses your mic, gated by Discord's own per-client mute/VAD state below.",
+  self_unmute: "Only capture your mic while you are **unmuted in Discord** for that client. Off = transcribe even when self-muted.",
+  self_vad: "Only capture your mic when **Discord's voice activity** says you're speaking for that client - avoids transcribing background room noise.",
   g_dbfs: "**Silence gate.** Audio quieter than this (in dBFS) is skipped before it ever reaches the model. Higher (e.g. -45) gates harder and kills phantom *\"Thank you.\"* on near-silence.",
   g_vad: "**Silero VAD** trims non-speech regions from each chunk before transcription - fewer hallucinations on noise.",
   g_reqspeak: "**End when not speaking.** Closes an utterance once Discord's per-user speaking indicator goes quiet (after a short grace), which stops screenshare/comfort-noise bleed from transcribing forever. If your speech is being split into too many lines, turn this off to segment purely by audio.",

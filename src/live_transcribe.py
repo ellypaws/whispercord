@@ -184,6 +184,7 @@ frida_sessions = []                            # keep-alive (session, script) re
 cdp_clients = set()                            # client exe names with a live CDP connection
 client_scripts = {}                            # client exe name -> live Frida script (for set_ssrcs rpc)
 self_gate = {}                                 # client -> bool: capture my mic for this client right now
+overlay_status = {}                            # client -> {state, detail, ts}
 corr = collections.defaultdict(dict)           # src -> {uid: co-occurrence score} for speaker binding
 bind_votes = collections.defaultdict(lambda: collections.defaultdict(float))  # src -> {uid: naming votes}
 lock = threading.Lock()
@@ -203,6 +204,45 @@ def kind_enabled(src):
 def display_name(src, name):
     base = name or ("user " + src[-5:])
     return (base + SCREEN_LABEL) if kind_of(src) == "stream" else base
+
+
+def set_overlay_status(client, state, detail=""):
+    if not client:
+        return
+    with lock:
+        overlay_status[client] = {"state": state, "detail": detail or "", "ts": int(time.time() * 1000)}
+    broadcast_status()
+
+
+def status_payload():
+    now = time.time()
+    with lock:
+        per = {}
+        for s, t in last_frame.items():
+            cl = src_client.get(s, "?")
+            d = per.setdefault(cl, {"streams": 0, "active": 0, "mapped": 0})
+            d["streams"] += 1
+            if now - t < 0.6:
+                d["active"] += 1
+            if s in src2user:
+                d["mapped"] += 1
+        total_active = sum(d["active"] for d in per.values())
+        total_mapped = len(src2user)
+        overlays = dict(overlay_status)
+        hooked = set(hooked_clients)
+        cdp = set(cdp_clients)
+    clients_status = {}
+    for cl in (hooked | cdp | set(per.keys()) | set(overlays.keys())) - {"?"}:
+        d = per.get(cl, {"streams": 0, "active": 0, "mapped": 0})
+        clients_status[cl] = {"hooked": cl in hooked, "cdp": cl in cdp,
+                              "streams": d["streams"], "active": d["active"], "mapped": d["mapped"],
+                              "overlay": overlays.get(cl)}
+    return {"type": "status", "state": "listening", "active": total_active,
+            "mapped": total_mapped, "clients": clients_status}
+
+
+def broadcast_status():
+    broadcast(status_payload())
 
 SELF = CFG.get("self_transcribe", {})          # own-voice transcription options
 SELF_SPEAK_GRACE_S = 1.0                       # Discord self-speaking can flicker between VAD polls
@@ -575,11 +615,16 @@ def mapping_thread():
             if client:
                 cdp_clients.add(client)
             print("[map] CDP connected on port %d (%s)" % (port, client or "unknown"))
-            if master_inject and inject_for(client) and client not in injected:
+            if not master_inject or not inject_for(client):
+                set_overlay_status(client, "disabled")
+            elif client not in injected:
+                set_overlay_status(client, "attaching")
                 try:
                     inject_overlay(c, client); injected.add(client)
+                    set_overlay_status(client, "attached")
                     print("[overlay] injected (%s)" % (client or "all"))
                 except Exception as e:
+                    set_overlay_status(client, "failed", str(e))
                     print("[overlay] inject failed (%s): %s" % (client, e))
 
     def resolve_user(c, uid):
@@ -689,10 +734,14 @@ def mapping_thread():
                 _cl, _cc = _st["client"], _st["cdp"]
                 try:
                     if master_inject and inject_for(_cl):
+                        set_overlay_status(_cl, "reloading")
                         inject_overlay(_cc, _cl); injected.add(_cl)
+                        set_overlay_status(_cl, "attached")
                     else:
+                        set_overlay_status(_cl, "disabled")
                         cleanup_overlay(_cc); injected.discard(_cl)
                 except Exception as e:
+                    set_overlay_status(_cl, "failed", str(e))
                     print("[overlay] reinject failed (%s): %s" % (_cl, e))
             print("[overlay] re-injected on request")
         # apply any pending manual (re)assignments queued by the relay
@@ -746,6 +795,7 @@ def mapping_thread():
                     conns.pop(port, None)
                     if client:
                         cdp_clients.discard(client)
+                        set_overlay_status(client, "failed", "CDP disconnected")
                     injected.discard(client)
                     print("[map] CDP on port %d dropped; will retry" % port)
                 continue
@@ -1114,25 +1164,7 @@ def main():
     def heartbeat():
         while True:
             time.sleep(1.5)
-            now = time.time()
-            with lock:
-                per = {}
-                for s, t in last_frame.items():
-                    cl = src_client.get(s, "?")
-                    d = per.setdefault(cl, {"streams": 0, "active": 0, "mapped": 0})
-                    d["streams"] += 1
-                    if now - t < 0.6:
-                        d["active"] += 1
-                    if s in src2user:
-                        d["mapped"] += 1
-                total_active = sum(d["active"] for d in per.values())
-            clients = {}
-            for cl in (set(hooked_clients) | set(cdp_clients) | set(per.keys())) - {"?"}:
-                d = per.get(cl, {"streams": 0, "active": 0, "mapped": 0})
-                clients[cl] = {"hooked": cl in hooked_clients, "cdp": cl in cdp_clients,
-                               "streams": d["streams"], "active": d["active"], "mapped": d["mapped"]}
-            broadcast({"type": "status", "state": "listening", "active": total_active,
-                       "mapped": len(src2user), "clients": clients})
+            broadcast_status()
     threading.Thread(target=heartbeat, daemon=True).start()
 
     print("[run] live transcription running (Ctrl+C to stop)")
