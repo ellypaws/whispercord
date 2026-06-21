@@ -23,6 +23,8 @@ dist-native/
 config.json
 cache/
 cuda/
+pkgs/
+whispercpp/
 
 # Reverse-engineering dev kit + auxiliary node projects (not part of the app; large)
 tools/

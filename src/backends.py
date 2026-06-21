@@ -10,8 +10,9 @@ and hallucination gating stay in the engine, ABOVE the backend, so behaviour is 
 across engines — only the model call differs.
 """
 
-# Flipped on when the whisper.cpp backend (hip/vulkan) lands. Until then gpu_detect.resolve()
-# degrades hip/vulkan to cpu so the options are selectable but never break.
+# Whether the whisper.cpp backend (hip/vulkan) is wired up. The binding/downloader exist and are
+# validated, but stays False until the GPU artifacts are hosted (P3 CI) so auto-routing keeps
+# degrading hip/vulkan to cpu rather than 404ing on a download. Flip to True once artifacts ship.
 WHISPERCPP_AVAILABLE = False
 
 
@@ -35,3 +36,32 @@ class CT2Backend:
             condition_on_previous_text=False,          # avoid repeat/hallucination loops
         )
         return segs
+
+
+class WhisperCppBackend:
+    """whisper.cpp (GGML via ctypes) for AMD/Intel GPUs (vulkan/hip). Same transcribe(audio)->segs
+    contract as CT2Backend; segments expose .text/.no_speech_prob/.avg_logprob. Note: whisper.cpp
+    has no built-in Silero VAD pre-filter, so the engine's upstream RMS/speaking gating carries it
+    (the in-model VAD that CT2Backend uses is not applied here)."""
+
+    def __init__(self, wcpp, *, beam_size, language, no_speech_threshold):
+        self._w = wcpp
+        self._beam = beam_size
+        self._lang = language
+        self._no_speech = no_speech_threshold
+
+    def transcribe(self, audio):
+        return self._w.transcribe(audio, language=self._lang, beam_size=self._beam,
+                                  no_speech_threshold=self._no_speech)
+
+
+def load_whispercpp(device, gfx, model_name, *, beam_size, language, no_speech_threshold,
+                    log=print, on_progress=None):
+    """Download (if needed) the whisper.cpp lib variant for `device`(+gfx) and the GGML model,
+    then return a ready WhisperCppBackend. Raises if the artifact/model can't be obtained."""
+    import whispercpp_setup, whispercpp_ffi
+    dll = whispercpp_setup.ensure_lib(device, gfx, log=log, on_progress=on_progress)
+    model_path = whispercpp_setup.ensure_model(model_name, log=log, on_progress=on_progress)
+    w = whispercpp_ffi.WhisperCpp(dll, model_path, use_gpu=(device in ("vulkan", "hip")))
+    return WhisperCppBackend(w, beam_size=beam_size, language=language,
+                             no_speech_threshold=no_speech_threshold)

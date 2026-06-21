@@ -900,41 +900,58 @@ def main():
             add_cuda_dlls()
         except Exception as e:
             print("[cuda] setup failed (%s) - GPU may not load" % e)
-    print("[whisper] loading '%s' on %s (%s)..." % (MODEL, DEVICE, COMPUTE))
-    # All models live in one app-owned cache. A model already there is loaded with
-    # local_files_only so it NEVER re-downloads (switching back and forth is free); only a
-    # genuinely missing model is fetched. The banner text reflects which case it is.
-    mr = model_store.cache_dir()
-    cached = model_store.is_cached(MODEL)
-    if cached:
-        emit_progress("model", "Loading speech model '%s'" % MODEL)
-    else:
-        print("[whisper] '%s' not cached - downloading once into %s" % (MODEL, mr))
-        emit_progress("model", "Downloading speech model '%s' (first use)" % MODEL)
-    def _load(dev, comp, local_only):
-        return WhisperModel(MODEL, device=dev, compute_type=comp,
-                            download_root=mr, local_files_only=local_only)
-    try:
-        model = _load(DEVICE, COMPUTE, cached)
-    except Exception as e:
-        print("[whisper] load failed (%s)" % e)
-        model = None
-        if cached:                     # cache looked present but was incomplete -> repair, same device
-            try:
-                emit_progress("model", "Repairing speech model '%s'" % MODEL)
-                model = _load(DEVICE, COMPUTE, False)
-            except Exception as e2:
-                print("[whisper] refetch failed (%s)" % e2)
-        if model is None and DEVICE == "cuda":   # GPU still won't load -> degrade to CPU, don't crash
-            print("[whisper] CUDA load failed - falling back to CPU")
-            emit_progress("model", "GPU load failed - using CPU")
+    backend = None
+    if DEVICE in ("hip", "vulkan"):
+        # whisper.cpp (GGML) handles AMD/Intel GPUs. Download the lib+model on first use; any
+        # failure (artifact missing, load error) degrades to the CTranslate2 CPU path below.
+        gfx = gpu_detect.amd_gpu()[0] if DEVICE == "hip" else None
+        try:
+            emit_progress("model", "Preparing %s speech runtime…" % DEVICE)
+            backend = backends.load_whispercpp(
+                DEVICE, gfx, MODEL, beam_size=BEAM, language=LANGUAGE, no_speech_threshold=NO_SPEECH,
+                log=print, on_progress=lambda pct, label: emit_progress("model", label, pct))
+            print("[whisper] ready (backend=whisper.cpp/%s, gfx=%s)" % (DEVICE, gfx))
+        except Exception as e:
+            print("[whisper] %s backend unavailable (%s) - falling back to CPU" % (DEVICE, e))
+            emit_progress("model", "%s GPU unavailable - using CPU" % DEVICE)
             DEVICE, COMPUTE = "cpu", "int8"
-            model = _load("cpu", "int8", False)
-        if model is None:
-            raise
-    backend = backends.CT2Backend(model, beam_size=BEAM, language=LANGUAGE,
-                                  use_vad=USE_VAD, no_speech_threshold=NO_SPEECH)
-    print("[whisper] ready (lang=%s, beam=%d, backend=ct2/%s)" % (LANGUAGE or "auto", BEAM, DEVICE))
+
+    if backend is None:
+        print("[whisper] loading '%s' on %s (%s)..." % (MODEL, DEVICE, COMPUTE))
+        # All models live in one app-owned cache. A model already there is loaded with
+        # local_files_only so it NEVER re-downloads (switching back and forth is free); only a
+        # genuinely missing model is fetched. The banner text reflects which case it is.
+        mr = model_store.cache_dir()
+        cached = model_store.is_cached(MODEL)
+        if cached:
+            emit_progress("model", "Loading speech model '%s'" % MODEL)
+        else:
+            print("[whisper] '%s' not cached - downloading once into %s" % (MODEL, mr))
+            emit_progress("model", "Downloading speech model '%s' (first use)" % MODEL)
+        def _load(dev, comp, local_only):
+            return WhisperModel(MODEL, device=dev, compute_type=comp,
+                                download_root=mr, local_files_only=local_only)
+        try:
+            model = _load(DEVICE, COMPUTE, cached)
+        except Exception as e:
+            print("[whisper] load failed (%s)" % e)
+            model = None
+            if cached:                     # cache looked present but was incomplete -> repair, same device
+                try:
+                    emit_progress("model", "Repairing speech model '%s'" % MODEL)
+                    model = _load(DEVICE, COMPUTE, False)
+                except Exception as e2:
+                    print("[whisper] refetch failed (%s)" % e2)
+            if model is None and DEVICE == "cuda":   # GPU still won't load -> degrade to CPU, don't crash
+                print("[whisper] CUDA load failed - falling back to CPU")
+                emit_progress("model", "GPU load failed - using CPU")
+                DEVICE, COMPUTE = "cpu", "int8"
+                model = _load("cpu", "int8", False)
+            if model is None:
+                raise
+        backend = backends.CT2Backend(model, beam_size=BEAM, language=LANGUAGE,
+                                      use_vad=USE_VAD, no_speech_threshold=NO_SPEECH)
+        print("[whisper] ready (lang=%s, beam=%d, backend=ct2/%s)" % (LANGUAGE or "auto", BEAM, DEVICE))
     emit_progress("ready", "Engine ready", 100, done=True)
 
     threading.Thread(target=start_relay, daemon=True).start()
