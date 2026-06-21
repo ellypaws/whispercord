@@ -218,7 +218,8 @@ class WhisperCpp:
             pass
         return self._auto_lang or "en"   # don't cache a low-confidence guess; retry next chunk
 
-    def transcribe(self, audio_f32, language=None, beam_size=1, no_speech_threshold=0.6):
+    def transcribe(self, audio_f32, language=None, beam_size=1, no_speech_threshold=0.6,
+                   suppress_nst=True):
         import numpy as np
         a = np.ascontiguousarray(audio_f32, dtype=np.float32)
         greedy = (beam_size or 1) <= 1
@@ -230,6 +231,7 @@ class WhisperCpp:
         p.translate = False
         p.single_segment = False
         p.no_speech_thold = float(no_speech_threshold)
+        p.suppress_nst = bool(suppress_nst)
         if greedy:
             p.greedy.best_of = 1
         else:

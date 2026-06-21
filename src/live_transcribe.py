@@ -62,6 +62,7 @@ LANGUAGE = (CFG.get("language") or "").strip() or None
 BEAM = int(CFG.get("beam_size", 1))
 DEVICE = CFG.get("device", "cuda")
 COMPUTE = CFG.get("compute_type", "float16")
+TRANSCRIBE_SOUNDS = bool(CFG.get("transcribe_sounds", True))
 RELAY_PORT = CFG["relay_port"]
 SILENCE_S = CFG["silence_s"]        # gap that ends an utterance
 MIN_UTT_S = CFG["min_utt_s"]
@@ -111,12 +112,21 @@ DROP = set(_norm(p) for p in GATE["drop_phrases"])
 # Whisper emits non-speech markers in brackets. Pure-silence ones ([BLANK_AUDIO], [ Silence ],
 # (inaudible)) carry no content -> drop them like an empty result (whisper.cpp/Vulkan emits
 # [BLANK_AUDIO] where CT2 stays silent). Genuine sound events ([laughs], [LAUGHTER], (claps),
-# *Nyuh*, ♪music♪) are kept verbatim; the UI highlights them.
+# *Nyuh*, ♪music♪) are kept verbatim only when transcribe_sounds is on; the UI highlights them.
 _BLANK_RE = re.compile(
     r"^[\[\(\*♪\s]*(?:blank[\s_]*audio|silence|silent|inaudible|no[\s_]*speech|pause|"
     r"background[\s_]*noise)[\s_]*[\]\)\*♪.]*$", re.I)
 def _is_blank_marker(t):
     return bool(_BLANK_RE.match(t or ""))
+
+
+_SOUND_MARKER_RE = re.compile(
+    r"\s*(?:\[[^\]\r\n]*\]|\([^\)\r\n]*\)|\*[^*\r\n]+\*|♪[^♪\r\n]*♪|♪+)\s*")
+_ORPHAN_SEPARATOR_RE = re.compile(r"(^|\s)[,;:.-]+(?=\s|$)")
+def _strip_sound_markers(t):
+    t = _SOUND_MARKER_RE.sub(" ", t or "")
+    t = _ORPHAN_SEPARATOR_RE.sub(" ", t)
+    return re.sub(r"\s+", " ", t).strip()
 
 
 def suppress_noise(x):
@@ -296,7 +306,7 @@ def apply_live_config(cfg):
     relay-port are deliberately NOT touched here — those still require a restart."""
     global CAP, CAP_VOICE, CAP_SCREEN, SCREEN_DETECT_S, MAX_STALE_S, SCREEN_LABEL
     global GATE, GATE_DBFS, USE_VAD, NO_SPEECH, MIN_LOGPROB, DROP, REQUIRE_SPEAKING, SPK_GRACE_S
-    global LANGUAGE, BEAM, SELF, UNCENSOR, _UNCENSOR_RULES
+    global LANGUAGE, BEAM, TRANSCRIBE_SOUNDS, SELF, UNCENSOR, _UNCENSOR_RULES
     try:
         if "voice_events" in cfg:
             CFG["voice_events"] = bool(cfg["voice_events"])   # mapping_thread reads this each pass
@@ -320,6 +330,8 @@ def apply_live_config(cfg):
         SPK_GRACE_S = max(2.0, float(GATE.get("speaking_grace_s", 2.5) or 2.5))
         LANGUAGE = (cfg.get("language") or "").strip() or None
         BEAM = int(cfg.get("beam_size", 1))
+        if "transcribe_sounds" in cfg:
+            TRANSCRIBE_SOUNDS = bool(cfg.get("transcribe_sounds", True))
         SELF = cfg.get("self_transcribe") or SELF
         print("[cfg] live settings applied (no restart)")
     except Exception as e:
@@ -1101,6 +1113,7 @@ def main():
                 backend = backends.load_whispercpp(
                     be, gfx if be == "hip" else None, MODEL,
                     beam_size=BEAM, language=LANGUAGE, no_speech_threshold=NO_SPEECH,
+                    transcribe_sounds=TRANSCRIBE_SOUNDS,
                     log=print, on_progress=lambda pct, label: emit_progress("model", label, pct))
                 DEVICE = be
                 print("[whisper] ready (backend=whisper.cpp/%s, gfx=%s)" % (be, gfx if be == "hip" else "-"))
@@ -1154,7 +1167,8 @@ def main():
             if model is None:
                 raise
         backend = backends.CT2Backend(model, beam_size=BEAM, language=LANGUAGE,
-                                      use_vad=USE_VAD, no_speech_threshold=NO_SPEECH)
+                                      use_vad=USE_VAD, no_speech_threshold=NO_SPEECH,
+                                      transcribe_sounds=TRANSCRIBE_SOUNDS)
         print("[whisper] ready (lang=%s, beam=%d, backend=ct2/%s)" % (LANGUAGE or "auto", BEAM, DEVICE))
     emit_progress("ready", "Engine ready", 100, done=True)
 
@@ -1184,12 +1198,16 @@ def main():
         level = rms_dbfs(audio)
         if level < GATE_DBFS:                          # too quiet to be speech -> skip the model
             return ""
-        segs = backend.transcribe(audio)
+        segs = backend.transcribe(audio, transcribe_sounds=TRANSCRIBE_SOUNDS)
         out = []
         for s in segs:
             txt = s.text.strip()
             if not txt or _is_blank_marker(txt):       # silence/blank-audio marker -> nothing (like "...")
                 continue
+            if not TRANSCRIBE_SOUNDS:
+                txt = _strip_sound_markers(txt)
+                if not txt or _is_blank_marker(txt):
+                    continue
             if UNCENSOR:
                 txt = uncensor_text(txt)
             low_conf = (s.no_speech_prob > NO_SPEECH) or (s.avg_logprob < MIN_LOGPROB)
@@ -1299,7 +1317,7 @@ def main():
                 t = transcribe(b, denoise=denoise)
                 if t:
                     print("  [%s] %s" % (display_name(src, (src2user.get(src) or {}).get("name")), t))
-                    emit(src, t, True)
+                emit(src, t, True)
             elif kind == "stale":
                 # Whisper got stuck; b carries the last partial. Finalize it (or an empty final to
                 # clear the overlay) WITHOUT re-running the model on the same wedged audio.

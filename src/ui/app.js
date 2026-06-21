@@ -744,6 +744,7 @@ const toHex = (s) => {
 function fillForm(c) {
   CFG = c;
   $("whisper_model").value = c.whisper_model;
+  $("transcribe_sounds").checked = c.transcribe_sounds !== false;
   $("cap_screen").checked = (c.capture || {}).screenshare !== false;
   const g = c.gating || {};
   $("g_dbfs").value = g.min_rms_dbfs ?? -50;
@@ -797,6 +798,7 @@ function readForm() {
   const csv = (s) => s.split(",").map((x) => x.trim()).filter(Boolean);
   return Object.assign({}, CFG, {
     whisper_model: $("whisper_model").value,
+    transcribe_sounds: $("transcribe_sounds").checked,
     voice_events: $("ui_events").checked,
     uncensor: $("g_uncensor").checked,
     capture: Object.assign({}, CFG.capture, { screenshare: $("cap_screen").checked }),
@@ -994,6 +996,7 @@ const LIVE_FIELDS = new Set([
   "ui_newtop", "ui_ts", "ui_tsfmt", "a_highlight",        // wrapper-only display prefs
   "ui_events",                                            // show voice events (engine emits live)
   "cap_screen",                                            // transcribe stream audio
+  "transcribe_sounds",                                     // backend suppressors + text cleanup
   "self_en", "self_unmute", "self_vad", "self_ns", "self_device",  // own-voice (incl. live device switch)
   "g_dbfs", "g_vad", "g_reqspeak", "g_drop",               // silence gating
   "g_uncensor",                                            // restore self-bleeped profanity
@@ -1795,6 +1798,7 @@ const HELP = {
   whisper_model: "**Speech model.** Bigger = more accurate, slower, more VRAM.\n- `tiny`/`base` - fastest, rough\n- `small` - good balance (default)\n- `medium`/`large-v3` - best accuracy (needs a strong GPU)\n\nModels download once and are reused - switching back never re-downloads.",
   adv_lang: "**Language.** `Auto-detect` lets Whisper guess per utterance. Pin a language to stop it switching mid-call and to speed things up slightly.",
   cap_screen: "**Transcribe stream audio.** Include Go Live / screenshare audio (game, music, video) in transcription. Off = only people's microphones. Applies live, no restart.",
+  transcribe_sounds: "**Transcribe sound events.** Keep emitted non-speech captions like `[laughs]`, `(applause)`, or `♪ music ♪`. Off strips those markers and treats sound-only output like silence. Applies live.",
   self_en: "**Transcribe your own microphone** in addition to everyone else's audio. Uses your mic, gated by Discord's own per-client mute/VAD state below.",
   self_unmute: "Only capture your mic while you are **unmuted in Discord** for that client. Off = transcribe even when self-muted.",
   self_vad: "Only capture your mic when **Discord's voice activity** says you're speaking for that client - avoids transcribing background room noise.",

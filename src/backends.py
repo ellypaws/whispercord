@@ -20,21 +20,28 @@ class CT2Backend:
     """faster-whisper / CTranslate2. A behaviour-identical wrapper over WhisperModel.transcribe
     so the engine's transcribe loop is backend-agnostic."""
 
-    def __init__(self, model, *, beam_size, language, use_vad, no_speech_threshold):
+    def __init__(self, model, *, beam_size, language, use_vad, no_speech_threshold,
+                 transcribe_sounds=True):
         self._model = model
         self._beam = beam_size
         self._lang = language
         self._vad = use_vad
         self._no_speech = no_speech_threshold
+        self._transcribe_sounds = bool(transcribe_sounds)
 
-    def transcribe(self, audio):
-        segs, _ = self._model.transcribe(
-            audio, beam_size=self._beam, language=self._lang,
-            vad_filter=self._vad,
-            vad_parameters={"min_silence_duration_ms": 300} if self._vad else None,
-            no_speech_threshold=self._no_speech,
-            condition_on_previous_text=False,          # avoid repeat/hallucination loops
-        )
+    def transcribe(self, audio, *, transcribe_sounds=None):
+        allow_sounds = self._transcribe_sounds if transcribe_sounds is None else bool(transcribe_sounds)
+        opts = {
+            "beam_size": self._beam,
+            "language": self._lang,
+            "vad_filter": self._vad,
+            "vad_parameters": {"min_silence_duration_ms": 300} if self._vad else None,
+            "no_speech_threshold": self._no_speech,
+            "condition_on_previous_text": False,       # avoid repeat/hallucination loops
+        }
+        if allow_sounds:
+            opts["suppress_tokens"] = []
+        segs, _ = self._model.transcribe(audio, **opts)
         return segs
 
 
@@ -44,19 +51,22 @@ class WhisperCppBackend:
     has no built-in Silero VAD pre-filter, so the engine's upstream RMS/speaking gating carries it
     (the in-model VAD that CT2Backend uses is not applied here)."""
 
-    def __init__(self, wcpp, *, beam_size, language, no_speech_threshold):
+    def __init__(self, wcpp, *, beam_size, language, no_speech_threshold, transcribe_sounds=True):
         self._w = wcpp
         self._beam = beam_size
         self._lang = language
         self._no_speech = no_speech_threshold
+        self._transcribe_sounds = bool(transcribe_sounds)
 
-    def transcribe(self, audio):
+    def transcribe(self, audio, *, transcribe_sounds=None):
+        allow_sounds = self._transcribe_sounds if transcribe_sounds is None else bool(transcribe_sounds)
         return self._w.transcribe(audio, language=self._lang, beam_size=self._beam,
-                                  no_speech_threshold=self._no_speech)
+                                  no_speech_threshold=self._no_speech,
+                                  suppress_nst=not allow_sounds)
 
 
 def load_whispercpp(device, gfx, model_name, *, beam_size, language, no_speech_threshold,
-                    log=print, on_progress=None):
+                    transcribe_sounds=True, log=print, on_progress=None):
     """Download (if needed) the whisper.cpp lib variant for `device`(+gfx) and the GGML model,
     then return a ready WhisperCppBackend. Raises if the artifact/model can't be obtained."""
     import whispercpp_setup, whispercpp_ffi
@@ -64,4 +74,5 @@ def load_whispercpp(device, gfx, model_name, *, beam_size, language, no_speech_t
     model_path = whispercpp_setup.ensure_model(model_name, log=log, on_progress=on_progress)
     w = whispercpp_ffi.WhisperCpp(dll, model_path, use_gpu=(device in ("vulkan", "hip")))
     return WhisperCppBackend(w, beam_size=beam_size, language=language,
-                             no_speech_threshold=no_speech_threshold)
+                             no_speech_threshold=no_speech_threshold,
+                             transcribe_sounds=transcribe_sounds)
