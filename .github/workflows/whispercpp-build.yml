@@ -79,7 +79,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        gfx: [gfx110X]   # debug: one arch first; expand to gfx120X/gfx1151/gfx1150 once green
+        gfx: [gfx110X, gfx120X, gfx1151, gfx1150]   # RDNA3 desktop / RDNA4 / Strix Halo / Strix Point
     steps:
       - uses: actions/checkout@v4
         with:
