@@ -35,10 +35,12 @@
   .tabs { display:flex; gap:4px; padding:8px 14px 0; background:var(--panel); flex:0 0 auto; }
   .tab { padding:7px 14px; cursor:pointer; color:var(--mut); border-bottom:2px solid transparent; font-weight:600; }
   .tab.active { color:var(--txt); border-color:var(--accent); }
+  .tab.highlight:not(.active) { color:var(--accent); animation:tabnudge 1.3s ease-in-out infinite; }
+  @keyframes tabnudge { 0%,100% { opacity:1; } 50% { opacity:.45; } }
   main { padding:14px; flex:1; min-height:0; display:flex; flex-direction:column; }
   .view { display:none; flex:1; min-height:0; }
   #v-live.active, #v-log.active { display:flex; }
-  #v-settings.active { display:block; overflow-y:auto; }
+  #v-settings.active, #v-speakers.active { display:block; overflow-y:auto; }
   .card { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:14px; margin-bottom:12px; }
   .card h2 { font-size:12px; text-transform:uppercase; letter-spacing:.6px; color:var(--mut); margin:0 0 10px; }
   .row { display:flex; align-items:center; gap:10px; margin:8px 0; }
@@ -186,6 +188,38 @@
   .modelrow .sz { margin-left:auto; color:var(--mut); font-variant-numeric:tabular-nums; }
   .modelrow .trash { cursor:pointer; color:var(--mut); display:inline-flex; padding:5px; border-radius:5px; }
   .modelrow .trash:hover { color:var(--bad); background:rgba(242,63,67,.12); }
+  /* speakers list (grouped per Discord client) */
+  .spk-head { display:flex; align-items:center; gap:7px; color:var(--mut); font-size:11px; text-transform:uppercase;
+              letter-spacing:.5px; font-weight:600; margin:14px 0 4px; }
+  .spk-head:first-child { margin-top:0; }
+  .spk-head .cdot { width:8px; height:8px; border-radius:50%; flex:0 0 auto; }
+  .spkrow { display:flex; align-items:center; gap:10px; padding:7px 0; border-top:1px solid var(--line); }
+  .spkrow:first-child { border-top:0; }
+  .spk-head + .spkrow { border-top:0; }
+  .spk-av { width:24px; height:24px; border-radius:50%; flex:0 0 24px; background:var(--panel2); }
+  .spkrow .nm { font-weight:600; }
+  .spkrow .sub { color:var(--mut); font-size:11px; }
+  .spkrow button { padding:4px 10px; }
+  .spk-clear { cursor:pointer; color:var(--mut); padding:2px 7px; border-radius:5px; font-size:15px; line-height:1; }
+  .spk-clear:hover { color:var(--txt); background:rgba(255,255,255,.08); }
+  /* assign / reassign popover */
+  .assign-pop { position:fixed; z-index:90; width:260px; max-height:340px; overflow:auto; background:var(--panel);
+                border:1px solid var(--line); border-radius:8px; box-shadow:0 10px 30px rgba(0,0,0,.6); padding:6px; }
+  .assign-pop .ap-h { font-size:11px; text-transform:uppercase; letter-spacing:.5px; color:var(--mut); padding:4px 6px; }
+  .ap-list { display:flex; flex-direction:column; }
+  .ap-item { display:flex; align-items:center; gap:8px; padding:6px; border-radius:6px; cursor:pointer; }
+  .ap-item:hover { background:var(--panel2); }
+  .ap-item img { width:22px; height:22px; border-radius:50%; flex:0 0 22px; background:var(--panel2); }
+  .ap-item span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .ap-item small { margin-left:auto; color:var(--mut); font-size:10px; flex:0 0 auto; }
+  .ap-empty { color:var(--mut); font-size:11px; padding:6px; line-height:1.45; }
+  .ap-manual { padding:6px; }
+  .ap-input { width:100%; background:var(--panel2); border:1px solid var(--line); color:var(--txt); border-radius:5px; padding:6px 8px; font:inherit; }
+  .ap-clear { display:flex; align-items:center; gap:6px; padding:7px 6px; margin-top:2px; color:var(--warn); cursor:pointer; border-radius:6px; font-size:12px; }
+  .ap-clear:hover { background:var(--panel2); }
+  .ap-clear .lu { width:14px; height:14px; }
+  .lu.lk { width:12px; height:12px; opacity:.75; vertical-align:-2px; }
+  .who .nm .lk { margin-left:3px; }
   /* event icons + keyword highlight in the desktop transcript */
   .tevent .lu { width:14px; height:14px; vertical-align:-2px; }
   .tline .txt mark { background:var(--alert,#f04747); color:#fff; border-radius:3px; padding:0 2px; }
@@ -219,13 +253,13 @@
 </div>
 
 <div id="restartbar" class="restartbar" style="display:none">
-  <span id="restartbar-text">Engine settings changed — restart the engine to apply.</span>
+  <span id="restartbar-text">Engine settings changed - restart the engine to apply.</span>
   <span class="grow"></span>
   <button id="restartbar-btn">Restart engine</button>
 </div>
 
 <div id="overlaybar" class="overlaybar" style="display:none">
-  <span id="overlaybar-text">Overlay settings changed — restart the overlay to apply.</span>
+  <span id="overlaybar-text">Overlay settings changed - restart the overlay to apply.</span>
   <span class="grow"></span>
   <button id="overlaybar-btn">Restart overlay</button>
 </div>
@@ -234,6 +268,7 @@
 
 <div class="tabs">
   <div class="tab active" data-v="live">Transcript</div>
+  <div class="tab" data-v="speakers">Speakers</div>
   <div class="tab" data-v="settings">Settings</div>
   <div class="tab" data-v="log">Console</div>
 </div>
@@ -243,11 +278,66 @@
     <div id="transcript"><div class="empty">Waiting for speech… start the engine and join a voice call.</div></div>
   </section>
 
+  <section id="v-speakers" class="view">
+    <div class="card">
+      <h2>Speakers</h2>
+      <div id="speakers"><div class="empty">Active speakers appear here once the engine is running.</div></div>
+      <div class="hint" style="margin:8px 0 0">Click a speaker (here or in the Transcript) to assign them from the call roster, or type a name / paste a user ID if they aren't listed. Manual picks stay locked until you clear them.</div>
+    </div>
+  </section>
+
   <section id="v-settings" class="view">
     <div class="card">
       <h2>Discord clients</h2>
       <div id="clients"><div class="empty">loading…</div></div>
       <div class="hint" style="margin:8px 0 0">Clients running without a debug port can be restarted to enable name resolution (this closes the current call).</div>
+    </div>
+
+    <div class="card">
+      <h2>Display</h2>
+      <div class="row"><label>Show voice events</label>
+        <label class="switch"><input type="checkbox" id="ui_events" /><span class="sl"></span></label></div>
+      <div class="hint">Join/leave, mute, deafen, stream start/stop per user.</div>
+      <div class="row"><label>Newest on top</label>
+        <label class="switch"><input type="checkbox" id="ui_newtop" /><span class="sl"></span></label></div>
+      <div class="hint">Off = newest lines appear at the bottom (classic chat). On = newest pops in at the top.</div>
+      <div class="row"><label>Show timestamps</label>
+        <label class="switch"><input type="checkbox" id="ui_ts" /><span class="sl"></span></label></div>
+      <div class="row"><label>Timestamp format</label>
+        <select id="ui_tsfmt"><option value="clock">clock (14:03:22)</option><option value="relative">relative (12s ago)</option></select></div>
+      <div class="row"><label>Overlay log height (px)</label><input type="number" id="o_logh" min="120" max="900" /></div>
+    </div>
+
+    <div class="card">
+      <h2>Alerts</h2>
+      <div class="row"><label>Keywords</label>
+        <div id="kw" class="pillbox"><input id="kw-input" type="text" placeholder="type a word, press Enter" /></div></div>
+      <div class="hint">Red highlight + beep when spoken (e.g. your name).</div>
+      <div class="row"><label>Play sound</label>
+        <label class="switch"><input type="checkbox" id="a_sound" /><span class="sl"></span></label></div>
+      <div class="row"><label>Highlight color</label>
+        <input type="color" id="a_highlight" style="flex:0 0 52px;height:30px;padding:2px" /></div>
+    </div>
+
+    <div class="card">
+      <h2>Subtitle overlay</h2>
+      <div id="overlay_clients"><div class="hint">No Discord clients detected yet.</div></div>
+      <div class="hint">Toggle the in-Discord subtitle overlay per client. Applies on engine restart.</div>
+    </div>
+
+    <div class="card">
+      <h2>Your voice (microphone)</h2>
+      <div class="row"><label>Transcribe my own voice</label>
+        <label class="switch"><input type="checkbox" id="self_en" /><span class="sl"></span></label></div>
+      <div class="row"><label>Only when unmuted</label>
+        <label class="switch"><input type="checkbox" id="self_unmute" /><span class="sl"></span></label></div>
+      <div class="row"><label>Only when Discord says I'm speaking</label>
+        <label class="switch"><input type="checkbox" id="self_vad" /><span class="sl"></span></label></div>
+      <div class="hint">Uses Discord's own noise gate/VAD + mute state per client, so it won't transcribe room noise the way a raw mic would.</div>
+      <div class="row"><label>Input device</label>
+        <select id="self_device"><option value="">System default</option></select></div>
+      <div class="subhead">Apply to clients</div>
+      <div id="self_clients"><div class="hint">No Discord clients detected yet.</div></div>
     </div>
 
     <div class="card">
@@ -279,32 +369,6 @@
     </div>
 
     <div class="card">
-      <h2>Downloaded models</h2>
-      <div id="models"><div class="hint">No models downloaded yet.</div></div>
-    </div>
-
-    <div class="card">
-      <h2>Subtitle overlay</h2>
-      <div id="overlay_clients"><div class="hint">No Discord clients detected yet.</div></div>
-      <div class="hint">Toggle the in-Discord subtitle overlay per client. Applies on engine restart.</div>
-    </div>
-
-    <div class="card">
-      <h2>Your voice (microphone)</h2>
-      <div class="row"><label>Transcribe my own voice</label>
-        <label class="switch"><input type="checkbox" id="self_en" /><span class="sl"></span></label></div>
-      <div class="row"><label>Only when unmuted</label>
-        <label class="switch"><input type="checkbox" id="self_unmute" /><span class="sl"></span></label></div>
-      <div class="row"><label>Only when Discord says I'm speaking</label>
-        <label class="switch"><input type="checkbox" id="self_vad" /><span class="sl"></span></label></div>
-      <div class="hint">Uses Discord's own noise gate/VAD + mute state per client, so it won't transcribe room noise the way a raw mic would.</div>
-      <div class="row"><label>Input device</label>
-        <select id="self_device"><option value="">System default</option></select></div>
-      <div class="subhead">Apply to clients</div>
-      <div id="self_clients"><div class="hint">No Discord clients detected yet.</div></div>
-    </div>
-
-    <div class="card">
       <h2>Silence gating</h2>
       <div class="row"><label>Min loudness (dBFS)</label>
         <input type="range" id="g_dbfs" min="-70" max="-30" step="1" />
@@ -320,37 +384,16 @@
     </div>
 
     <div class="card">
-      <h2>Alerts</h2>
-      <div class="row"><label>Keywords</label>
-        <div id="kw" class="pillbox"><input id="kw-input" type="text" placeholder="type a word, press Enter" /></div></div>
-      <div class="hint">Red highlight + beep when spoken (e.g. your name).</div>
-      <div class="row"><label>Play sound</label>
-        <label class="switch"><input type="checkbox" id="a_sound" /><span class="sl"></span></label></div>
-      <div class="row"><label>Highlight color</label>
-        <input type="color" id="a_highlight" style="flex:0 0 52px;height:30px;padding:2px" /></div>
-    </div>
-
-    <div class="card">
-      <h2>Display</h2>
-      <div class="row"><label>Show voice events</label>
-        <label class="switch"><input type="checkbox" id="ui_events" /><span class="sl"></span></label></div>
-      <div class="hint">Join/leave, mute, deafen, stream start/stop per user.</div>
-      <div class="row"><label>Newest on top</label>
-        <label class="switch"><input type="checkbox" id="ui_newtop" /><span class="sl"></span></label></div>
-      <div class="hint">Off = newest lines appear at the bottom (classic chat). On = newest pops in at the top.</div>
-      <div class="row"><label>Show timestamps</label>
-        <label class="switch"><input type="checkbox" id="ui_ts" /><span class="sl"></span></label></div>
-      <div class="row"><label>Timestamp format</label>
-        <select id="ui_tsfmt"><option value="clock">clock (14:03:22)</option><option value="relative">relative (12s ago)</option></select></div>
-      <div class="row"><label>Overlay log height (px)</label><input type="number" id="o_logh" min="120" max="900" /></div>
-    </div>
-
-    <div class="card">
       <h2>Overlay fade</h2>
       <div class="row"><label>Subtitle timeout (ms)</label><input type="number" id="o_timeout" /></div>
       <div class="row"><label>Max blocks</label><input type="number" id="o_max" /></div>
       <div class="row"><label>Fade starts at</label><input type="number" id="o_fade" /></div>
       <div class="row"><label>Min fade opacity</label><input type="number" id="o_minop" step="0.05" /></div>
+    </div>
+
+    <div class="card">
+      <h2>Downloaded models</h2>
+      <div id="models"><div class="hint">No models downloaded yet.</div></div>
     </div>
 
     <details class="card">

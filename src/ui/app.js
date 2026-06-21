@@ -22,6 +22,25 @@ function colorFor(id) {
   for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
   return `hsl(${h % 360} 65% 72%)`;
 }
+// stable per-source emoji so two undetected speakers are tell-apart-able while you assign them
+const UNK_EMOJI = ["🦊","🐢","🦉","🦋","🐙","🦔","🦫","🐝","🦎","🐳","🦜","🐊","🦒","🦓","🦩","🦦","🐺","🦡","🐿️","🦃","🦚","🐌","🐠","🦂"];
+function emojiFor(src) {
+  let h = 0; const s = String(src || "");
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  return UNK_EMOJI[h % UNK_EMOJI.length];
+}
+// undetected speakers: the emoji becomes their AVATAR, so the name stays a clean "Unknown 1a2b3"
+function unknownLabel(src) { return "Unknown " + String(src).slice(-5); }
+function emojiAvatar(src) {   // render the per-source emoji as a round avatar (data-URI SVG)
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40">'
+    + '<rect width="40" height="40" rx="20" fill="#3a3c43"/>'
+    + '<text x="50%" y="52%" dominant-baseline="central" text-anchor="middle" font-size="22">' + emojiFor(src) + '</text></svg>';
+  return "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
+}
+const DEFAULT_AV_GRAY = "https://cdn.discordapp.com/embed/avatars/1.png";   // Discord's gray default avatar
+const badAvatars = new Set();   // real avatar URLs that failed to load -> fall back to the emoji avatar
+const rosters = {};   // client -> [{userId,name,avatar,stream}]  (the call's members, for the picker)
+const sources = {};   // src -> {client,name,avatar,resolved,locked,kind,ts}  (live speakers seen)
 
 // ---------- inline Lucide icons (offline; 24x24 stroke) ----------
 const LU = {
@@ -40,6 +59,9 @@ const LU = {
   "rotate-cw": '<path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/>',
   "arrow-up-down": '<path d="m21 16-4 4-4-4"/><path d="M17 20V4"/><path d="m3 8 4-4 4 4"/><path d="M7 4v16"/>',
   "download": '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/>',
+  "lock": '<rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
+  "lock-open": '<rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/>',
+  "user-plus": '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="19" x2="19" y1="8" y2="14"/><line x1="22" x2="16" y1="11" y2="11"/>',
 };
 function icon(name, cls) {
   return '<svg class="lu ' + (cls || "") + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + (LU[name] || "") + "</svg>";
@@ -102,7 +124,7 @@ function mdToHtml(md) {
 // ---------- transcript direction (newest at bottom by default, flippable) ----------
 const newestTop = () => !!(CFG && CFG.ui && CFG.ui.newest_at_top);   // global default for new panels
 const jumpLabel = (top) => "Jump to latest " + (top ? "↑" : "↓");
-const flipTitle = (top) => top ? "Newest on top — click for oldest first" : "Oldest on top — click for newest first";
+const flipTitle = (top) => top ? "Newest on top - click for oldest first" : "Oldest on top - click for newest first";
 function placeRow(p, el) {                 // insert at this panel's "newest" end
   if (p.newestTop) p.body.insertBefore(el, p.body.firstChild);
   else p.body.appendChild(el);
@@ -163,6 +185,7 @@ function activateTab(v) {
   document.querySelectorAll(".tab").forEach((x) => x.classList.toggle("active", x.dataset.v === v));
   document.querySelectorAll(".view").forEach((x) => x.classList.remove("active"));
   const view = $("v-" + v); if (view) view.classList.add("active");
+  if (v === "live") { const tt = document.querySelector('.tab[data-v="live"]'); if (tt) tt.classList.remove("highlight"); }
 }
 document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () => activateTab(t.dataset.v)));
 
@@ -390,7 +413,7 @@ const dismissedReminders = new Set();   // reminder keys the user closed this se
 
 async function refreshClients() { clientList = await API.list_clients(); renderClients(); }
 
-// Dismissable nudges explaining why names may show as "user 1a2b3" — a client without a connected
+// Dismissable nudges explaining why names may show as "user 1a2b3" - a client without a connected
 // debug port can't resolve names. Only shown while the engine is running (i.e. actually capturing).
 function renderReminders() {
   const box = $("reminders"); if (!box) return;
@@ -411,7 +434,7 @@ function renderReminders() {
         active.push({
           key: "onscreen:" + c.folder, folder: c.folder, fix: false,
           text: clientLabel(c.exe) + " is connected but isn't resolving any names. Keep its voice call "
-              + "visible on screen — name lookup reads the on-screen voice panel.",
+              + "visible on screen - name lookup reads the on-screen voice panel.",
         });
       }
     }
@@ -452,12 +475,12 @@ function renderClients() {
       dot = "good";
       label = `attached ✓ · ${streams} stream${streams === 1 ? "" : "s"}`;
       tip = cdp ? `Hooked + names resolving via CDP on port ${c.port} (${mapped} mapped).`
-                : "Audio hooked, but NO debug port — names stay as “user …”. Use Restart w/ port.";
+                : "Audio hooked, but NO debug port - names stay as “user …”. Use Restart w/ port.";
     } else if (c.live) {
       dot = "info"; label = `debug port ${c.port} ready`;
       tip = `Debug port ${c.port} open. Will attach once you Start the engine and a call is active.`;
     } else if (c.running) {
-      dot = "warn"; label = "running — no debug port";
+      dot = "warn"; label = "running - no debug port";
       tip = "Capture works but names won't resolve. Restart w/ port enables names (closes the current call).";
     } else {
       dot = "off"; label = "not running";
@@ -497,10 +520,11 @@ async function refreshEngine() {
   if (!running) { clearRestartNeeded(); clearOverlayNeeded(); }   // nothing to apply while stopped
   renderReminders();                          // reflect engine state in the name-resolution nudges
 }
-let startedOnce = false;
 $("startbtn").addEventListener("click", async () => {
   $("startbtn").disabled = true;
-  if (!startedOnce) { startedOnce = true; activateTab("live"); }  // first Start -> jump to the Transcript view
+  // nudge toward the Transcript tab when starting from elsewhere; the highlight clears once you open it
+  const tt = document.querySelector('.tab[data-v="live"]');
+  if (tt && !tt.classList.contains("active")) tt.classList.add("highlight");
   showProgress({ active: true, done: false, pct: null, label: "Starting engine…" });
   await API.start_backend();
   setTimeout(refreshEngine, 800);
@@ -562,7 +586,7 @@ function connectRelay() {
   relay = sock;
   sock.onopen = () => { if (relay !== sock) return; $("rdot").className = "dot on"; $("rstat").textContent = "relay"; };
   sock.onclose = () => {
-    if (relay !== sock) return;                 // superseded by a newer socket — don't reconnect
+    if (relay !== sock) return;                 // superseded by a newer socket - don't reconnect
     $("rdot").className = "dot off"; $("rstat").textContent = "relay off";
     setTimeout(connectRelay, 2000);
   };
@@ -573,13 +597,28 @@ function connectRelay() {
       $("activepill").textContent = (m.active || 0) + " stream" + (m.active === 1 ? "" : "s");
       if (m.clients) { engineStatus = m.clients; renderClients(); updateSpeaking(m.clients); }
     } else if (m.type === "transcript") {
+      trackSource(m);
       renderTranscript(m);
     } else if (m.type === "event") {
       renderEvent(m);
     } else if (m.type === "rename") {
+      trackSource(m);
       applyRename(m);
+    } else if (m.type === "roster") {
+      rosters[m.client] = m.members || [];
     }
   };
+}
+
+// remember each live source's current identity so the Speakers list + pickers can show/fix it
+function trackSource(m) {
+  const s = sources[m.userId] || (sources[m.userId] = {});
+  s.client = m.client; s.ts = Date.now();
+  if (m.name !== undefined) s.name = m.name;
+  if (m.avatar !== undefined) s.avatar = m.avatar;
+  if (m.kind !== undefined) s.kind = m.kind;
+  if (m.resolved !== undefined) s.resolved = m.resolved;
+  if (m.locked !== undefined) s.locked = m.locked;
 }
 
 function panelFor(client) {
@@ -642,7 +681,7 @@ function pinScroll(p) {
 function capLines(p) {                       // drop the OLDEST rows (opposite end from newest)
   while (p.body.children.length > 200) p.body.removeChild(p.newestTop ? p.body.lastChild : p.body.firstChild);
 }
-// per-client live "N speaking" badge — each pane shows ONLY its own client's active streams
+// per-client live "N speaking" badge - each pane shows ONLY its own client's active streams
 // (iterate panels, not the heartbeat, so a client that goes quiet/absent clears its own badge)
 function updateSpeaking(clients) {
   for (const key in panels) {
@@ -708,17 +747,15 @@ function renderTranscript(m) {
     line = document.createElement("div"); line.className = "tline";
     line.dataset.uid = m.userId;            // so retroactive renames can find this line
     const img = document.createElement("img");
-    img.src = m.avatar || DEFAULT_AV;
     img.onerror = () => { img.style.visibility = "hidden"; };
     img.onload = () => pinScroll(p);                  // re-pin once the avatar lays out
     const body = document.createElement("div"); body.className = "body";
     body.innerHTML = `<div class="who"><span class="ts"></span><span class="nm"></span></div><div class="txt"></div>`;
-    const nmEl = body.querySelector(".nm");
-    nmEl.textContent = m.name; nmEl.style.color = colorFor(m.userId);   // per-user color
     line.appendChild(img); line.appendChild(body);
     placeRow(p, line);                                // newest at the configured end
     p.cur[m.userId] = line;
   }
+  applySpeaker(line, m.userId, m.client);             // avatar + name (or Unknown) + click-to-assign
   const showTs = CFG && CFG.ui && CFG.ui.show_timestamps;
   const tsEl = line.querySelector(".ts");
   tsEl.style.display = showTs ? "" : "none";
@@ -736,13 +773,126 @@ function renderTranscript(m) {
 }
 
 function applyRename(m) {
-  const p = panels[(m.client || "unknown").toLowerCase()];
-  if (!p) return;
-  const esc = (window.CSS && CSS.escape) ? CSS.escape(m.userId) : m.userId.replace(/"/g, '\\"');
-  p.body.querySelectorAll('[data-uid="' + esc + '"]').forEach((line) => {
-    const nm = line.querySelector(".nm"); if (nm) nm.textContent = m.name;
-    const img = line.querySelector("img");
-    if (img && m.avatar) { img.src = m.avatar; img.style.visibility = ""; }
+  const esc = (window.CSS && CSS.escape) ? CSS.escape(m.userId) : String(m.userId).replace(/"/g, '\\"');
+  document.querySelectorAll('#transcript .tline[data-uid="' + esc + '"]')
+    .forEach((line) => applySpeaker(line, m.userId, m.client));
+}
+
+// paint a transcript line's avatar + name from the source's current identity, and wire the
+// name/avatar as a click target to (re)assign the speaker.
+function applySpeaker(line, src, client) {
+  const s = sources[src] || {};
+  const img = line.querySelector("img");
+  const nmEl = line.querySelector(".nm");
+  if (!img || !nmEl) return;
+  img.style.visibility = "";
+  if (s.resolved && s.avatar && !badAvatars.has(s.avatar)) {
+    img.src = s.avatar;
+    img.onerror = () => { img.onerror = null; badAvatars.add(s.avatar); img.src = emojiAvatar(src); };  // real avatar failed -> emoji
+  } else {
+    img.src = emojiAvatar(src);                      // undetected, or a manual name with no avatar
+    img.onerror = null;
+  }
+  nmEl.textContent = s.resolved ? (s.name || "") : unknownLabel(src);
+  nmEl.style.color = s.resolved ? colorFor(src) : "var(--mut)";
+  if (s.locked) nmEl.insertAdjacentHTML("beforeend", ' <span class="lk">' + icon("lock", "lk") + "</span>");
+  nmEl.style.cursor = img.style.cursor = "pointer";
+  nmEl.title = img.title = "Click to assign this speaker";
+  const open = (e) => { e.stopPropagation(); openAssignPicker(src, s.client || client, nmEl); };
+  nmEl.onclick = open; img.onclick = open;
+}
+
+// ---------- assign / reassign picker ----------
+function sendAssign(src, payload) {
+  try { if (relay && relay.readyState === 1) relay.send(JSON.stringify(Object.assign({ type: "assign", src: src }, payload))); } catch (e) {}
+}
+let assignPop = null;
+function closeAssign() { if (assignPop) { assignPop.remove(); assignPop = null; } }
+function positionPop(pop, anchor) {
+  const r = anchor.getBoundingClientRect();
+  const w = pop.offsetWidth, h = pop.offsetHeight;
+  let left = r.left, top = r.bottom + 6;
+  if (left + w > window.innerWidth - 8) left = window.innerWidth - w - 8;
+  if (top + h > window.innerHeight - 8) top = r.top - h - 6;
+  pop.style.left = Math.max(8, left) + "px"; pop.style.top = Math.max(8, top) + "px";
+}
+function openAssignPicker(src, client, anchor) {
+  closeAssign(); closeHelp();
+  const members = (rosters[client] || rosters[(client || "").toLowerCase()] || [])
+    .slice().sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")));
+  const cur = sources[src] || {};
+  const pop = document.createElement("div"); pop.className = "assign-pop";
+  let html = '<div class="ap-h">Assign speaker</div>';
+  if (members.length) {
+    html += '<div class="ap-list">' + members.map((u) =>
+      `<div class="ap-item" data-uid="${u.userId}"><img src="${u.avatar || DEFAULT_AV_GRAY}">` +
+      `<span>${escapeHtml(u.name || "user")}</span>${u.stream ? '<small>stream</small>' : ''}</div>`).join("") + '</div>';
+  } else {
+    html += '<div class="ap-empty">No call roster - this client has no debug port, so names can\'t be listed. '
+          + 'Restart it with its port, or type a name / paste a user ID below.</div>';
+  }
+  html += '<div class="ap-manual"><input class="ap-input" type="text" placeholder="type a name… or paste a user ID" /></div>';
+  if (cur.locked) html += '<div class="ap-clear">' + icon("lock-open") + ' Clear lock (back to auto-detect)</div>';
+  pop.innerHTML = html;
+  document.body.appendChild(pop);
+  positionPop(pop, anchor);
+  pop.addEventListener("click", (e) => e.stopPropagation());
+  pop.querySelectorAll(".ap-item").forEach((it) =>
+    it.onclick = () => { sendAssign(src, { userId: it.dataset.uid }); closeAssign(); });
+  const input = pop.querySelector(".ap-input");
+  input.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    const v = input.value.trim(); if (!v) return;
+    if (/^\d{15,21}$/.test(v)) sendAssign(src, { userId: v }); else sendAssign(src, { name: v });
+    closeAssign();
+  });
+  const clr = pop.querySelector(".ap-clear");
+  if (clr) clr.onclick = () => { sendAssign(src, { clear: true }); closeAssign(); };
+  setTimeout(() => input.focus(), 0);
+  assignPop = pop;
+}
+
+// ---------- Speakers tab (grouped per Discord client) ----------
+function speakerRow(src, s) {
+  const row = document.createElement("div"); row.className = "spkrow";
+  const img = document.createElement("img"); img.className = "spk-av";
+  if (s.resolved && s.avatar && !badAvatars.has(s.avatar)) {
+    img.src = s.avatar;
+    img.onerror = () => { badAvatars.add(s.avatar); img.src = emojiAvatar(src); };
+  } else { img.src = emojiAvatar(src); }
+  const nm = document.createElement("span"); nm.className = "nm";
+  nm.textContent = s.resolved ? (s.name || "") : unknownLabel(src);
+  if (!s.resolved) nm.style.color = "var(--mut)";
+  const meta = document.createElement("span"); meta.className = "sub";
+  meta.innerHTML = (s.kind === "stream" ? "stream" : "voice") + (s.locked ? ' · ' + icon("lock", "lk") + " locked" : "");
+  const grow = document.createElement("span"); grow.className = "grow";
+  const btn = document.createElement("button"); btn.className = "sec"; btn.textContent = s.locked ? "Reassign" : "Assign";
+  btn.onclick = (e) => { e.stopPropagation(); openAssignPicker(src, s.client, btn); };
+  row.append(img, nm, meta, grow, btn);
+  if (s.locked) {
+    const clr = document.createElement("span"); clr.className = "spk-clear"; clr.innerHTML = icon("lock-open"); clr.title = "Clear lock (back to auto-detect)";
+    clr.onclick = (e) => { e.stopPropagation(); sendAssign(src, { clear: true }); };
+    row.append(clr);
+  }
+  return row;
+}
+function renderSpeakers() {
+  const box = $("speakers"); if (!box) return;
+  const now = Date.now();
+  const live = Object.entries(sources).filter(([, s]) => now - (s.ts || 0) < 60000);
+  if (!engineRunning || !live.length) {
+    box.innerHTML = '<div class="empty">Active speakers appear here once the engine is running.</div>';
+    return;
+  }
+  const byClient = {};   // each Discord client has its own call/speakers - scope the list per client
+  for (const [src, s] of live) { (byClient[s.client || "unknown"] = byClient[s.client || "unknown"] || []).push([src, s]); }
+  box.innerHTML = "";
+  Object.keys(byClient).sort((a, b) => clientLabel(a).localeCompare(clientLabel(b))).forEach((cl) => {
+    const head = document.createElement("div"); head.className = "spk-head";
+    const dot = document.createElement("span"); dot.className = "cdot"; dot.style.background = CLIENT_COLORS[cl] || "#5865f2";
+    const hn = document.createElement("span"); hn.textContent = clientLabel(cl);
+    head.append(dot, hn); box.appendChild(head);
+    byClient[cl].sort((a, b) => b[1].ts - a[1].ts).forEach(([src, s]) => box.appendChild(speakerRow(src, s)));
   });
 }
 
@@ -768,6 +918,9 @@ async function boot() {
   $("restartbar-btn").innerHTML = icon("rotate-cw") + "Restart engine";
   $("updatebar-btn").innerHTML = icon("download") + "Update";
   setInterval(refreshEngine, 3000);
+  setInterval(renderSpeakers, 1500);
+  document.addEventListener("click", closeAssign);
+  window.addEventListener("resize", closeAssign);
   checkUpdate();
 }
 
@@ -778,7 +931,7 @@ async function refreshModels() {
   const box = $("models");
   const current = ($("whisper_model").value || "").toLowerCase();
   if (!list.length) {
-    box.innerHTML = '<div class="hint">No models downloaded yet — the selected model downloads on first Start.</div>';
+    box.innerHTML = '<div class="hint">No models downloaded yet - the selected model downloads on first Start.</div>';
     return;
   }
   box.innerHTML = "";
@@ -806,14 +959,14 @@ async function refreshModels() {
 
 // ---------- (i) help popovers with markdown ----------
 const HELP = {
-  whisper_model: "**Speech model.** Bigger = more accurate, slower, more VRAM.\n- `tiny`/`base` — fastest, rough\n- `small` — good balance (default)\n- `medium`/`large-v3` — best accuracy (needs a strong GPU)\n\nModels download once and are reused — switching back never re-downloads.",
+  whisper_model: "**Speech model.** Bigger = more accurate, slower, more VRAM.\n- `tiny`/`base` - fastest, rough\n- `small` - good balance (default)\n- `medium`/`large-v3` - best accuracy (needs a strong GPU)\n\nModels download once and are reused - switching back never re-downloads.",
   adv_lang: "**Language.** `Auto-detect` lets Whisper guess per utterance. Pin a language to stop it switching mid-call and to speed things up slightly.",
   cap_screen: "**Transcribe stream audio.** Include Go Live / screenshare audio (game, music, video) in transcription. Off = only people's microphones. Applies live, no restart.",
   self_en: "**Transcribe your own microphone** in addition to everyone else's audio. Uses your mic, gated by Discord's own mute/VAD state below.",
   self_unmute: "Only capture your mic while you are **unmuted in Discord**. Off = transcribe even when self-muted.",
-  self_vad: "Only capture your mic when **Discord's voice activity** says you're speaking — avoids transcribing background room noise.",
+  self_vad: "Only capture your mic when **Discord's voice activity** says you're speaking - avoids transcribing background room noise.",
   g_dbfs: "**Silence gate.** Audio quieter than this (in dBFS) is skipped before it ever reaches the model. Higher (e.g. -45) gates harder and kills phantom *\"Thank you.\"* on near-silence.",
-  g_vad: "**Silero VAD** trims non-speech regions from each chunk before transcription — fewer hallucinations on noise.",
+  g_vad: "**Silero VAD** trims non-speech regions from each chunk before transcription - fewer hallucinations on noise.",
   g_reqspeak: "**End when not speaking.** Closes an utterance once Discord's per-user speaking indicator goes quiet (after a short grace), which stops screenshare/comfort-noise bleed from transcribing forever. If your speech is being split into too many lines, turn this off to segment purely by audio.",
   g_drop: "**Drop phrases** (comma-separated) that Whisper hallucinates on silence (e.g. `thank you, bye`). Dropped only when the audio is quiet or low-confidence.",
   kw: "**Keyword alerts.** Words that get **highlighted** + a beep when spoken (e.g. your name). Editing these re-highlights the existing transcript live.",
