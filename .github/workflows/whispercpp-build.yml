@@ -22,6 +22,10 @@ on:
       hip_groups:
         description: HIP gfx groups to build (comma-separated)
         default: gfx110X,gfx120X,gfx1151,gfx1150
+      build_hip:
+        description: Also build the (large, per-arch) HIP runtimes — deferred by default
+        type: boolean
+        default: false
       publish:
         description: Publish a release with the artifacts
         type: boolean
@@ -70,6 +74,7 @@ jobs:
 
   # ---------------------------------------------------------------- HIP / ROCm (per RDNA family)
   build-hip:
+    if: ${{ github.event.inputs.build_hip == 'true' }}      # deferred — opt in to build HIP
     runs-on: windows-2022
     strategy:
       fail-fast: false
