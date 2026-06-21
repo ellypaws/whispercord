@@ -2,7 +2,7 @@
 let API = null;          // window.pywebview.api once ready
 let CFG = null;
 let relay = null;
-const panels = {};       // clientKey -> {col, body, jump, dot, cnt, pinned, n, cur:{userId->el}}
+const panels = {};       // clientKey -> transcript pane state + retained history
 const DEFAULT_AV = "https://cdn.discordapp.com/embed/avatars/0.png";
 const CLIENT_LABELS = { "discordptb.exe": "Discord PTB", "discord.exe": "Discord",
                         "discordcanary.exe": "Discord Canary", "discorddevelopment.exe": "Discord Dev" };
@@ -43,9 +43,24 @@ const rosters = {};   // client -> [{userId,name,avatar,stream,mute,deaf,video}]
 const speakingNow = {}; // client -> Set(userId) currently speaking (persists until the engine changes it)
 const EMPTY_SET = new Set();
 const sources = {};   // src -> {client,name,avatar,resolved,locked,kind,ts}  (live speakers seen)
+const HISTORY_WINDOW = 200;
+const HISTORY_STEP = 200;
+const HISTORY_COLLAPSE_MS = 30000;
+let itemSeq = 0;
+let searchChips = [];
+let searchSuggestItems = [];
+let searchSuggestIndex = 0;
 
 // ---------- inline Lucide icons (offline; 24x24 stroke) ----------
 const LU = {
+  "search": '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
+  "x": '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+  "user": '<path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>',
+  "calendar": '<path d="M8 2v4"/><path d="M16 2v4"/><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M3 10h18"/>',
+  "link": '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
+  "code-2": '<path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/>',
+  "at-sign": '<circle cx="12" cy="12" r="4"/><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8"/>',
+  "hash": '<line x1="4" x2="20" y1="9" y2="9"/><line x1="4" x2="20" y1="15" y2="15"/><line x1="10" x2="8" y1="3" y2="21"/><line x1="16" x2="14" y1="3" y2="21"/>',
   "log-in": '<path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" x2="3" y1="12" y2="12"/>',
   "log-out": '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/>',
   "mic": '<path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/>',
@@ -105,13 +120,466 @@ function setHl(el, text, kw) {            // render text into el, wrapping whole
   }
   if (i < t.length) el.appendChild(document.createTextNode(t.slice(i)));
 }
+function setAnyHl(el, text, terms) {
+  el.textContent = "";
+  const t = text || "";
+  const clean = Array.from(new Set((terms || []).map((x) => String(x || "").trim()).filter(Boolean)))
+    .sort((a, b) => b.length - a.length);
+  if (!clean.length) { el.textContent = t; return; }
+  const re = new RegExp(clean.map((k) => k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"), "gi");
+  let i = 0, mch;
+  while ((mch = re.exec(t)) !== null) {
+    if (mch.index > i) el.appendChild(document.createTextNode(t.slice(i, mch.index)));
+    const m = document.createElement("mark"); m.textContent = mch[0]; el.appendChild(m);
+    i = mch.index + mch[0].length;
+    if (mch[0].length === 0) re.lastIndex++;
+  }
+  if (i < t.length) el.appendChild(document.createTextNode(t.slice(i)));
+}
+function renderLineText(el, text) {
+  const terms = freeSearchTerms();
+  if (terms.length) setAnyHl(el, text, terms);
+  else setHl(el, text, matchKeyword(text));
+}
 // re-run highlighting over every transcript line after a keyword edit
 function rehighlightAll() {
-  document.querySelectorAll("#transcript .tline .txt").forEach((tx) => {
-    const text = tx.dataset.text || ""; setHl(tx, text, matchKeyword(text));
-  });
+  renderAllPanels();
   // push the live edit to the in-Discord overlays through the relay control bus
   try { if (relay && relay.readyState === 1) relay.send(JSON.stringify({ type: "setKeywords", keywords: kwList })); } catch (e) {}
+}
+
+// ---------- transcript search + filter ----------
+const SEARCH_OPS = new Set(["from", "before", "after", "during", "has", "mentions", "in"]);
+const SEARCH_OPERATORS = [
+  { op: "from", meta: "speaker", icon: "user" },
+  { op: "after", meta: "date", icon: "calendar" },
+  { op: "before", meta: "date", icon: "calendar" },
+  { op: "during", meta: "date", icon: "calendar" },
+  { op: "has", meta: "link, code", icon: "link" },
+  { op: "mentions", meta: "name", icon: "at-sign" },
+  { op: "in", meta: "client, voice, stream", icon: "hash" },
+];
+function stripQuotes(s) {
+  s = String(s || "").trim();
+  return ((s[0] === '"' && s[s.length - 1] === '"') || (s[0] === "'" && s[s.length - 1] === "'")) ? s.slice(1, -1) : s;
+}
+function lower(s) { return String(s || "").toLowerCase(); }
+function parseFreeTerms(raw) {
+  const out = [];
+  const re = /"([^"]+)"|'([^']+)'|(\S+)/g;
+  let m;
+  while ((m = re.exec(raw || "")) !== null) {
+    const v = (m[1] || m[2] || m[3] || "").trim();
+    if (!v || /^(from|before|after|during|has|mentions|in):/i.test(v)) continue;
+    out.push(v);
+  }
+  return out;
+}
+function freeSearchTerms() {
+  const input = $("search-input");
+  return parseFreeTerms(input ? input.value : "");
+}
+function searchActive() {
+  const input = $("search-input");
+  return searchChips.length > 0 || !!(input && input.value.trim());
+}
+function parseLooseDate(value) {
+  const v = lower(stripQuotes(value));
+  const now = new Date();
+  let y = now.getFullYear(), m = null, d = null;
+  if (v === "today") { m = now.getMonth() + 1; d = now.getDate(); }
+  else if (v === "yesterday") {
+    const dt = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+    y = dt.getFullYear(); m = dt.getMonth() + 1; d = dt.getDate();
+  } else {
+    let match = v.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
+    if (match) { y = parseInt(match[1], 10); m = parseInt(match[2], 10); d = parseInt(match[3], 10); }
+    else {
+      match = v.match(/^(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?$/);
+      if (match) {
+        m = parseInt(match[1], 10); d = parseInt(match[2], 10);
+        if (match[3]) { y = parseInt(match[3], 10); if (y < 100) y += 2000; }
+      }
+    }
+  }
+  if (m == null || d == null) return null;
+  const start = new Date(y, m - 1, d);
+  if (start.getFullYear() !== y || start.getMonth() !== m - 1 || start.getDate() !== d) return null;
+  const end = new Date(y, m - 1, d + 1);
+  return { start: start.getTime(), end: end.getTime() };
+}
+function looksLikeLink(text) { return /\bhttps?:\/\/\S+|\bwww\.\S+/i.test(text || ""); }
+function looksLikeCode(text) {
+  return /`[^`]+`|```|<\/?[a-z][\s\S]*?>|\b(const|let|var|function|class|return|import|select|update|insert)\b|[A-Za-z_$][\w$]*\([^)]*\)|[{};]/i.test(text || "");
+}
+function displayNameFor(item) {
+  const s = sources[item.userId] || {};
+  if (s.resolved && s.name) return s.name;
+  return item.name || unknownLabel(item.userId);
+}
+function speakerMatches(item, chip) {
+  const ids = (chip.userIds || (chip.userId ? [chip.userId] : [])).map(lower).filter(Boolean);
+  const needle = lower(chip.name || chip.value || chip.userId);
+  const name = lower(displayNameFor(item));
+  const uid = lower(item.userId);
+  if (ids.length && ids.includes(uid)) return true;
+  if (!needle) return !ids.length;
+  return name.includes(needle) || uid.includes(needle);
+}
+function mentionMatches(text, chip) {
+  const needle = lower(chip.name || chip.value);
+  return !!needle && lower(text).includes(needle);
+}
+function channelMatches(item, chip) {
+  const v = lower(chip.value);
+  if (!v) return true;
+  if (v === "stream" || v === "voice") return lower(item.kind) === v;
+  return lower(item.client).includes(v) || lower(clientLabel(item.client)).includes(v);
+}
+function chipMatches(item, chip) {
+  const text = item.text || "";
+  if (chip.op === "from") return speakerMatches(item, chip);
+  if (chip.op === "mentions") return mentionMatches(text, chip);
+  if (chip.op === "has") return lower(chip.value) === "link" ? looksLikeLink(text) : looksLikeCode(text);
+  if (chip.op === "in") return channelMatches(item, chip);
+  if (chip.op === "before" || chip.op === "after" || chip.op === "during") {
+    const r = parseLooseDate(chip.value); if (!r) return true;
+    const ts = item.ts || 0;
+    if (chip.op === "before") return ts < r.start;
+    if (chip.op === "after") return ts >= r.start;
+    return ts >= r.start && ts < r.end;
+  }
+  return true;
+}
+function itemMatchesSearch(item) {
+  if (!searchActive()) return true;
+  if (item.type !== "transcript") return false;
+  const terms = freeSearchTerms().map(lower);
+  const text = lower(item.text || "");
+  if (terms.some((t) => !text.includes(t))) return false;
+  const fromChips = searchChips.filter((chip) => chip.op === "from");
+  const mentionChips = searchChips.filter((chip) => chip.op === "mentions");
+  if (fromChips.length && !fromChips.some((chip) => chipMatches(item, chip))) return false;
+  if (mentionChips.length && !mentionChips.some((chip) => chipMatches(item, chip))) return false;
+  return searchChips
+    .filter((chip) => chip.op !== "from" && chip.op !== "mentions")
+    .every((chip) => chipMatches(item, chip));
+}
+function knownSpeakers() {
+  const byKey = {};
+  const add = (userId, name, avatar, client, kind) => {
+    const display = name || (userId ? unknownLabel(userId) : "Unknown");
+    const byPerson = display && !/^Unknown\s/i.test(display);
+    const key = byPerson ? (String(client || "").toLowerCase() + ":" + lower(display))
+                         : String(userId || (client || "") + ":" + display).toLowerCase();
+    if (!key) return;
+    const prev = byKey[key] || {};
+    const userIds = (prev.userIds || []).slice();
+    if (userId && !userIds.some((id) => lower(id) === lower(userId))) userIds.push(userId);
+    byKey[key] = {
+      userId: prev.userId || userId || "",
+      userIds,
+      name: prev.name || display,
+      avatar: avatar || prev.avatar || (userId ? emojiAvatar(userId) : DEFAULT_AV_GRAY),
+      client: client || prev.client || "",
+      kind: prev.kind && prev.kind !== kind ? "mixed" : (kind || prev.kind || ""),
+    };
+  };
+  for (const client in rosters) {
+    for (const m of rosters[client] || []) add(m.userId, m.name, m.avatar, client, m.stream ? "stream" : "voice");
+  }
+  for (const userId in sources) {
+    const s = sources[userId] || {};
+    add(userId, s.resolved ? s.name : unknownLabel(userId), s.resolved ? s.avatar : emojiAvatar(userId), s.client, s.kind);
+  }
+  return Object.values(byKey).sort((a, b) => lower(a.name).localeCompare(lower(b.name)));
+}
+function findKnownSpeaker(value) {
+  const v = lower(value);
+  return knownSpeakers().find((u) =>
+    lower(u.name) === v || lower(u.userId) === v || (u.userIds || []).some((id) => lower(id) === v));
+}
+function knownChannelValue(value) {
+  const v = lower(value);
+  if (v === "stream" || v === "voice") return true;
+  const labels = new Set();
+  Object.keys(panels).forEach((k) => { labels.add(k); labels.add(lower(clientLabel(k))); });
+  (clientList || []).forEach((c) => { labels.add(lower(c.exe)); labels.add(lower(clientLabel(c.exe))); });
+  return labels.has(v);
+}
+function canChipOperator(op, value, atEnd, forceUser) {
+  if (!SEARCH_OPS.has(op) || !value) return false;
+  if (op === "has") return ["link", "code"].includes(lower(value));
+  if (op === "before" || op === "after" || op === "during") return !!parseLooseDate(value);
+  if (op === "from" || op === "mentions") return forceUser || !atEnd;
+  if (op === "in") return !atEnd || knownChannelValue(value);
+  return true;
+}
+function addSearchChip(op, value, user, quiet) {
+  op = lower(op); value = stripQuotes(value);
+  if (!canChipOperator(op, value, false, true)) return false;
+  const chip = { op, value };
+  if (user) {
+    chip.userId = user.userId || "";
+    chip.userIds = (user.userIds || (user.userId ? [user.userId] : [])).slice();
+    chip.name = user.name || value;
+    chip.avatar = user.avatar || "";
+    chip.client = user.client || "";
+  }
+  searchChips.push(chip);
+  renderSearchChips();
+  if (!quiet) applySearch();
+  return true;
+}
+function removeSearchChip(i) {
+  searchChips.splice(i, 1);
+  renderSearchChips();
+  applySearch();
+}
+function chipLabel(chip) {
+  if ((chip.op === "from" || chip.op === "mentions") && chip.name) return chip.name;
+  return chip.value;
+}
+function updateSearchExpanded() {
+  const wrap = $("search-wrap"), input = $("search-input"), pop = $("search-suggest"), clear = $("search-clear");
+  if (!wrap || !input) return;
+  const open = document.activeElement === input || searchActive() || (pop && pop.classList.contains("show"));
+  wrap.classList.toggle("expanded", !!open);
+  if (clear) clear.style.display = open ? "inline-flex" : "none";
+}
+function renderSearchChips() {
+  const box = $("searchbox"), input = $("search-input"), clear = $("search-clear");
+  if (!box || !input) return;
+  box.querySelectorAll(".search-chip").forEach((c) => c.remove());
+  searchChips.forEach((chip, i) => {
+    const el = document.createElement("span"); el.className = "search-chip";
+    const op = document.createElement("b"); op.textContent = chip.op + ":";
+    el.appendChild(op);
+    if (chip.op === "from" || chip.op === "mentions") {
+      const img = document.createElement("img"); img.src = chip.avatar || (chip.userId ? emojiAvatar(chip.userId) : DEFAULT_AV_GRAY);
+      img.onerror = () => { img.src = chip.userId ? emojiAvatar(chip.userId) : DEFAULT_AV_GRAY; };
+      const nm = document.createElement("span"); nm.className = "sc-name"; nm.textContent = chipLabel(chip);
+      el.append(img, nm);
+    } else {
+      const v = document.createElement("span"); v.className = "sc-name"; v.textContent = chip.value; el.appendChild(v);
+    }
+    const x = document.createElement("span"); x.className = "sc-x"; x.innerHTML = icon("x");
+    x.onclick = (e) => { e.stopPropagation(); removeSearchChip(i); };
+    el.appendChild(x);
+    box.insertBefore(el, input);
+  });
+  updateSearchExpanded();
+}
+function activeSearchToken() {
+  const input = $("search-input"); if (!input) return null;
+  const pos = input.selectionStart == null ? input.value.length : input.selectionStart;
+  if (pos !== input.value.length) return null;
+  const before = input.value.slice(0, pos);
+  const m = before.match(/(^|\s)(\S*)$/);
+  if (!m) return null;
+  const raw = m[2] || "";
+  const start = before.length - raw.length;
+  const colon = raw.indexOf(":");
+  const op = colon >= 0 ? lower(raw.slice(0, colon)) : "";
+  const query = colon >= 0 ? raw.slice(colon + 1) : raw;
+  return { raw, op, query, hasColon: colon >= 0, start, end: pos };
+}
+function activeValueToken() {
+  const tok = activeSearchToken();
+  return tok && tok.hasColon && SEARCH_OPS.has(tok.op) ? tok : null;
+}
+function replaceActiveToken(text) {
+  const input = $("search-input"), tok = activeSearchToken();
+  if (!input || !tok) return;
+  input.value = input.value.slice(0, tok.start) + text + input.value.slice(tok.end);
+  input.selectionStart = input.selectionEnd = tok.start + text.length;
+  input.focus();
+}
+function knownChannels() {
+  const byValue = { voice: { value: "voice", label: "in:voice", meta: "kind", icon: "mic" },
+                    stream: { value: "stream", label: "in:stream", meta: "kind", icon: "screen-share" } };
+  Object.keys(panels).forEach((k) => {
+    const label = clientLabel(k);
+    byValue[lower(label)] = { value: label, label: "in:" + label, meta: k, icon: "hash" };
+  });
+  (clientList || []).forEach((c) => {
+    const label = clientLabel(c.exe);
+    byValue[lower(label)] = { value: label, label: "in:" + label, meta: c.exe, icon: "hash" };
+  });
+  return Object.values(byValue).sort((a, b) => lower(a.label).localeCompare(lower(b.label)));
+}
+function dateSuggestItems(op, q) {
+  const now = new Date();
+  const mm = String(now.getMonth() + 1).padStart(2, "0");
+  const dd = String(now.getDate()).padStart(2, "0");
+  const values = ["today", "yesterday", now.getFullYear() + "-" + mm + "-" + dd, mm + "/" + dd];
+  return values.map((value) => ({ kind: "value", op, value, label: op + ":" + value, meta: "date", icon: "calendar" }))
+    .filter((it) => !q || lower(it.value).includes(q) || lower(it.label).includes(q));
+}
+function suggestionItemsForToken(tok) {
+  const q = lower(tok ? tok.query : "");
+  if (!tok || !tok.hasColon) {
+    const raw = lower(tok ? tok.raw : "");
+    return SEARCH_OPERATORS
+      .filter((it) => !raw || it.op.startsWith(raw) || (it.op + ":").startsWith(raw))
+      .map((it) => ({ kind: "operator", op: it.op, label: it.op + ":", meta: it.meta, icon: it.icon }));
+  }
+  if (!SEARCH_OPS.has(tok.op)) return [];
+  if (tok.op === "from" || tok.op === "mentions") {
+    return knownSpeakers().filter((u) =>
+      !q || lower(u.name).includes(q) || lower(u.userId).includes(q) || (u.userIds || []).some((id) => lower(id).includes(q)))
+      .slice(0, 8).map((u) => ({ kind: "speaker", op: tok.op, user: u, label: u.name || "Unknown", icon: "user",
+                                 meta: [clientLabel(u.client), u.userId].filter(Boolean).join(" - ") }));
+  }
+  if (tok.op === "has") {
+    return [{ value: "link", icon: "link" }, { value: "code", icon: "code-2" }]
+      .map((it) => ({ kind: "value", op: "has", value: it.value, label: "has:" + it.value, meta: "content", icon: it.icon }))
+      .filter((it) => !q || it.value.startsWith(q));
+  }
+  if (tok.op === "in") {
+    return knownChannels().filter((it) => !q || lower(it.value).includes(q) || lower(it.label).includes(q))
+      .slice(0, 8).map((it) => Object.assign({ kind: "value", op: "in" }, it));
+  }
+  if (tok.op === "before" || tok.op === "after" || tok.op === "during") return dateSuggestItems(tok.op, q).slice(0, 8);
+  return [];
+}
+function renderSearchSuggest() {
+  const pop = $("search-suggest"), tok = activeSearchToken();
+  if (!pop || !tok) return hideSearchSuggest();
+  searchSuggestItems = suggestionItemsForToken(tok);
+  searchSuggestIndex = Math.max(0, Math.min(searchSuggestIndex, searchSuggestItems.length - 1));
+  pop.innerHTML = "";
+  if (!searchSuggestItems.length) return hideSearchSuggest();
+  searchSuggestItems.forEach((it, i) => {
+    const row = document.createElement("div"); row.className = "ss-item" + (i === searchSuggestIndex ? " active" : "");
+    if (it.kind === "speaker") {
+      const img = document.createElement("img"); img.src = it.user.avatar || DEFAULT_AV_GRAY;
+      img.onerror = () => { img.src = it.user.userId ? emojiAvatar(it.user.userId) : DEFAULT_AV_GRAY; };
+      row.appendChild(img);
+    } else {
+      const badge = document.createElement("span"); badge.className = "ss-op"; badge.innerHTML = icon(it.icon || "hash");
+      row.appendChild(badge);
+    }
+    const main = document.createElement("div"); main.className = "ss-main";
+    const name = document.createElement("span"); name.className = "ss-name"; name.textContent = it.label;
+    const handle = document.createElement("span"); handle.className = "ss-handle";
+    handle.textContent = it.meta || "";
+    main.append(name, handle);
+    row.appendChild(main);
+    row.onclick = (e) => { e.stopPropagation(); selectSearchSuggestion(it); };
+    pop.appendChild(row);
+  });
+  pop.classList.add("show");
+  updateSearchExpanded();
+}
+function hideSearchSuggest() {
+  const pop = $("search-suggest"); if (pop) pop.classList.remove("show");
+  searchSuggestItems = []; searchSuggestIndex = 0;
+  updateSearchExpanded();
+}
+function selectSearchSuggestion(it) {
+  if (!it) return;
+  if (it.kind === "operator") {
+    replaceActiveToken(it.op + ":");
+    searchSuggestIndex = 0;
+    renderSearchSuggest();
+    return;
+  }
+  if (it.kind === "speaker") addSearchChip(it.op, it.user.name || it.user.userId, it.user);
+  else addSearchChip(it.op, it.value);
+  replaceActiveToken("");
+  hideSearchSuggest();
+}
+function consumeSearchTokens(forceUser) {
+  const input = $("search-input"); if (!input) return false;
+  const raw = input.value;
+  const re = /\S+/g;
+  let m, last = 0, out = "", changed = false;
+  while ((m = re.exec(raw)) !== null) {
+    const token = m[0], start = m.index, end = start + token.length;
+    const opm = token.match(/^([a-z]+):(.+)$/i);
+    if (!opm) continue;
+    const op = lower(opm[1]), value = stripQuotes(opm[2]);
+    const atEnd = raw.slice(end).trim().length === 0;
+    if (!canChipOperator(op, value, atEnd, !!forceUser)) continue;
+    const user = (op === "from" || op === "mentions") ? findKnownSpeaker(value) : null;
+    out += raw.slice(last, start);
+    addSearchChip(op, value, user, true);
+    changed = true;
+    last = end;
+  }
+  if (!changed) return false;
+  out += raw.slice(last);
+  input.value = out.replace(/\s{2,}/g, " ").trimStart();
+  renderSearchChips();
+  applySearch();
+  return true;
+}
+function applySearch() {
+  renderSearchChips();
+  renderAllPanels();
+}
+function initSearch() {
+  const input = $("search-input"), clear = $("search-clear"), box = $("searchbox");
+  if (!input || !clear || !box) return;
+  const searchIc = $("search-ic");
+  if (searchIc) searchIc.innerHTML = icon("search");
+  clear.innerHTML = icon("x");
+  box.addEventListener("click", () => { input.focus(); renderSearchSuggest(); });
+  input.addEventListener("focus", renderSearchSuggest);
+  input.addEventListener("blur", () => setTimeout(updateSearchExpanded, 120));
+  input.addEventListener("input", () => {
+    consumeSearchTokens(false);
+    renderSearchSuggest();
+    applySearch();
+  });
+  input.addEventListener("keydown", (e) => {
+    const suggestOpen = $("search-suggest") && $("search-suggest").classList.contains("show");
+    if (suggestOpen && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+      e.preventDefault();
+      searchSuggestIndex = (searchSuggestIndex + (e.key === "ArrowDown" ? 1 : -1) + searchSuggestItems.length) % searchSuggestItems.length;
+      renderSearchSuggest();
+      return;
+    }
+    if (suggestOpen && (e.key === "Enter" || e.key === "Tab")) {
+      e.preventDefault();
+      if (searchSuggestItems[searchSuggestIndex]) selectSearchSuggestion(searchSuggestItems[searchSuggestIndex]);
+      return;
+    }
+    if ((e.key === "Enter" || e.key === " ") && activeValueToken()) {
+      const tok = activeValueToken();
+      if (tok.query) {
+        e.preventDefault();
+        const user = (tok.op === "from" || tok.op === "mentions") ? findKnownSpeaker(tok.query) : null;
+        addSearchChip(tok.op, tok.query, user || null);
+        replaceActiveToken("");
+        hideSearchSuggest();
+      }
+      return;
+    }
+    if (e.key === "Enter") {
+      e.preventDefault();
+      consumeSearchTokens(true);
+      hideSearchSuggest();
+    } else if (e.key === "Backspace" && !input.value && searchChips.length) {
+      e.preventDefault();
+      searchChips.pop();
+      renderSearchChips();
+      applySearch();
+    } else if (e.key === "Escape") {
+      hideSearchSuggest();
+    }
+  });
+  clear.onclick = (e) => {
+    e.stopPropagation();
+    searchChips = [];
+    input.value = "";
+    renderSearchChips();
+    applySearch();
+    input.focus();
+    renderSearchSuggest();
+  };
+  document.addEventListener("click", (e) => { if (!e.target.closest(".search-wrap")) hideSearchSuggest(); });
 }
 
 // ---------- tiny markdown -> HTML (for the (i) help popovers) ----------
@@ -136,17 +604,12 @@ function mdToHtml(md) {
 const newestTop = () => !!(CFG && CFG.ui && CFG.ui.newest_at_top);   // global default for new panels
 const jumpLabel = (top) => "Jump to latest " + (top ? "↑" : "↓");
 const flipTitle = (top) => top ? "Newest on top - click for oldest first" : "Oldest on top - click for newest first";
-function placeRow(p, el) {                 // insert at this panel's "newest" end
-  if (p.newestTop) p.body.insertBefore(el, p.body.firstChild);
-  else p.body.appendChild(el);
-}
 function flipPanel(p) {                     // per-card direction toggle
   p.newestTop = !p.newestTop;
-  Array.from(p.body.children).reverse().forEach((r) => p.body.appendChild(r));
   if (p.jump) p.jump.textContent = jumpLabel(p.newestTop);
   if (p.flipBtn) p.flipBtn.title = flipTitle(p.newestTop);
   p.pinned = true; p.lastAuto = Date.now();
-  p.body.scrollTop = p.newestTop ? 0 : p.body.scrollHeight;
+  renderPanel(p, { forcePin: true });
 }
 
 // ---------- per-client overlay + own-voice toggles ----------
@@ -351,6 +814,7 @@ function initAutosave() {
     if (e.target.id === "kw-input") return;
     if (e.target.id === "adv_device") refreshGpu();
     if (e.target.id === "whisper_model") refreshModels();
+    if (e.target.id === "ui_ts" || e.target.id === "ui_tsfmt") renderAllPanels();
     scheduleSave();
     if (LIVE_FIELDS.has(e.target.id)) return;                 // applies live, no prompt
     if (OVERLAY_FIELDS.has(e.target.id)) markOverlayNeeded();  // overlay-only -> re-inject, not engine restart
@@ -672,23 +1136,31 @@ function panelFor(client) {
 
   // "pinned" = scrolled to the newest end (top when newestTop, else bottom). Direction is per-panel,
   // seeded from the global default and flippable on the card itself.
-  const p = { col, body, jump, cnt, client: key, rosterHead, rosterBottom, flipBtn: flip,
-              newestTop: newestTop(), pinned: true, n: 0, cur: {}, lastAuto: 0, jt: null };
+  const p = { col, body, jump, cnt, client: key, label: client, rosterHead, rosterBottom, flipBtn: flip,
+              newestTop: newestTop(), pinned: true, n: 0, items: [], active: {}, windowSize: HISTORY_WINDOW,
+              lastAuto: 0, jt: null, collapseTimer: null };
   // recompute the face row when the column is resized (responsive header-vs-bottom + fit)
   try { p.ro = new ResizeObserver(() => renderColumnRoster(p)); p.ro.observe(col); } catch (e) {}
   flip.title = flipTitle(p.newestTop);
   flip.onclick = () => flipPanel(p);
-  clr.onclick = () => { body.innerHTML = ""; p.cur = {}; p.n = 0; cnt.textContent = "0"; };
+  clr.onclick = () => {
+    body.innerHTML = ""; p.items = []; p.active = {}; p.n = 0; p.windowSize = HISTORY_WINDOW;
+    if (p.collapseTimer) { clearTimeout(p.collapseTimer); p.collapseTimer = null; }
+    cnt.textContent = "0"; jump.style.display = "none";
+  };
   body.addEventListener("scroll", () => {
     if (Date.now() - p.lastAuto < 130) return;            // ignore our own auto-scroll -> no flicker
-    const atEnd = p.newestTop ? (body.scrollTop < 28)
-                              : (body.scrollTop + body.clientHeight >= body.scrollHeight - 28);
-    if (atEnd) { p.pinned = true; jump.style.display = "none"; if (p.jt) { clearTimeout(p.jt); p.jt = null; } }
+    const atEnd = isAtLiveEdge(p);
+    if (atEnd) {
+      p.pinned = true; jump.style.display = "none"; if (p.jt) { clearTimeout(p.jt); p.jt = null; }
+      maybeScheduleWindowCollapse(p);
+    }
     else { p.pinned = false; if (!p.jt) p.jt = setTimeout(() => { if (!p.pinned) jump.style.display = "block"; p.jt = null; }, 180); }
   });
   jump.addEventListener("click", () => {
     p.pinned = true; jump.style.display = "none"; p.lastAuto = Date.now();
     body.scrollTop = p.newestTop ? 0 : body.scrollHeight;
+    maybeScheduleWindowCollapse(p);
   });
   panels[key] = p;
   return p;
@@ -702,8 +1174,142 @@ function pinScroll(p) {
   // taller than at first measure, which otherwise leaves us a few px short and "stuck".
   requestAnimationFrame(() => { if (p.pinned) scrollToEnd(p); });
 }
-function capLines(p) {                       // drop the OLDEST rows (opposite end from newest)
-  while (p.body.children.length > 200) p.body.removeChild(p.newestTop ? p.body.lastChild : p.body.firstChild);
+function isAtLiveEdge(p) {
+  const b = p.body;
+  return p.newestTop ? (b.scrollTop < 28) : (b.scrollTop + b.clientHeight >= b.scrollHeight - 28);
+}
+function isNearOldEdge(p) {
+  const b = p.body;
+  return p.newestTop ? (b.scrollTop + b.clientHeight >= b.scrollHeight - 60) : (b.scrollTop < 60);
+}
+function maybeScheduleWindowCollapse(p) {
+  if (!p || p.windowSize <= HISTORY_WINDOW || searchActive()) {
+    if (p && p.collapseTimer) { clearTimeout(p.collapseTimer); p.collapseTimer = null; }
+    return;
+  }
+  if (!isAtLiveEdge(p) || isNearOldEdge(p)) {
+    if (p.collapseTimer) { clearTimeout(p.collapseTimer); p.collapseTimer = null; }
+    return;
+  }
+  if (p.collapseTimer) return;
+  p.collapseTimer = setTimeout(() => {
+    p.collapseTimer = null;
+    if (p.windowSize <= HISTORY_WINDOW || searchActive() || !isAtLiveEdge(p) || isNearOldEdge(p)) return;
+    p.windowSize = HISTORY_WINDOW;
+    p.pinned = true;
+    renderPanel(p, { forcePin: true });
+  }, HISTORY_COLLAPSE_MS);
+}
+function allPanelItems(p) {
+  return p.items.concat(Object.values(p.active)).sort((a, b) => a.seq - b.seq);
+}
+function filteredPanelItems(p) {
+  return allPanelItems(p).filter(itemMatchesSearch);
+}
+function countTranscripts(items) {
+  return items.filter((it) => it.type === "transcript" && it.text).length;
+}
+function updatePanelCount(p, filtered) {
+  if (searchActive()) p.cnt.textContent = countTranscripts(filtered) + "/" + p.n;
+  else p.cnt.textContent = String(p.n);
+}
+function loadOlderButton(p, hiddenCount) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "load-older";
+  btn.textContent = "↑ Load 200 older";
+  btn.title = hiddenCount + " older message" + (hiddenCount === 1 ? "" : "s") + " hidden";
+  btn.onclick = (e) => {
+    e.stopPropagation();
+    p.windowSize += HISTORY_STEP;
+    p.pinned = false;
+    renderPanel(p, { afterLoad: true });
+  };
+  return btn;
+}
+function renderAllPanels() {
+  Object.values(panels).forEach((p) => renderPanel(p));
+}
+function renderPanel(p, opts) {
+  opts = opts || {};
+  const body = p.body;
+  const wasPinned = !!(opts.forcePin || p.pinned);
+  const oldHeight = body.scrollHeight;
+  const oldTop = body.scrollTop;
+  const filtered = filteredPanelItems(p);
+  const hidden = Math.max(0, filtered.length - p.windowSize);
+  let visible = filtered.slice(hidden);
+  if (p.newestTop) visible = visible.slice().reverse();
+
+  body.innerHTML = "";
+  const load = hidden > 0 ? loadOlderButton(p, hidden) : null;
+  if (load && !p.newestTop) body.appendChild(load);
+  if (!visible.length) {
+    const empty = document.createElement("div"); empty.className = "empty";
+    empty.textContent = searchActive() ? "No matches." : "No transcript yet.";
+    body.appendChild(empty);
+  } else {
+    visible.forEach((item) => body.appendChild(item.type === "event" ? eventLine(item, p) : transcriptLine(item, p)));
+  }
+  if (load && p.newestTop) body.appendChild(load);
+  updatePanelCount(p, filtered);
+
+  if (opts.afterLoad) {
+    p.lastAuto = Date.now();
+    body.scrollTop = p.newestTop ? body.scrollHeight : 0;
+    maybeScheduleWindowCollapse(p);
+    return;
+  }
+  if (wasPinned) {
+    p.pinned = true;
+    pinScroll(p);
+  } else {
+    const delta = body.scrollHeight - oldHeight;
+    body.scrollTop = p.newestTop ? oldTop + delta : oldTop;
+  }
+  maybeScheduleWindowCollapse(p);
+}
+function transcriptLine(item, p) {
+  const line = document.createElement("div"); line.className = "tline";
+  line.dataset.uid = item.userId;
+  const img = document.createElement("img");
+  img.onerror = () => { img.style.visibility = "hidden"; };
+  img.onload = () => pinScroll(p);
+  const body = document.createElement("div"); body.className = "body";
+  body.innerHTML = `<div class="who"><span class="ts"></span><span class="nm"></span></div><div class="txt"></div>`;
+  line.appendChild(img); line.appendChild(body);
+  applySpeaker(line, item.userId, item.client);
+  const showTs = CFG && CFG.ui && CFG.ui.show_timestamps;
+  const tsEl = line.querySelector(".ts");
+  tsEl.style.display = showTs ? "" : "none";
+  if (showTs) tsEl.textContent = fmtTs(item.ts || Date.now());
+  line.classList.toggle("interim", !item.isFinal);
+  const txEl = line.querySelector(".txt");
+  const text = item.text || (item.isFinal ? "" : "...");
+  txEl.dataset.text = text;
+  renderLineText(txEl, text);
+  return line;
+}
+function eventLine(item, p) {
+  const line = document.createElement("div"); line.className = "tevent";
+  const meta = EVENT_ICON[item.event];
+  const ico = document.createElement("span");
+  ico.innerHTML = icon(meta ? meta[0] : "info");
+  if (meta) ico.style.color = meta[1];
+  const txt = document.createElement("span"); txt.className = "etxt";
+  const showTs = CFG && CFG.ui && CFG.ui.show_timestamps;
+  txt.innerHTML = (showTs ? '<span class="ts"></span> ' : "") + "<b></b> " + escapeHtml(EVENT_LABEL[item.event] || item.event);
+  txt.querySelector("b").textContent = item.name || "someone";
+  if (showTs) txt.querySelector(".ts").textContent = fmtTs(item.ts || Date.now());
+  line.appendChild(ico);
+  if (item.avatar) {
+    const av = document.createElement("img"); av.src = item.avatar; av.alt = "";
+    av.onerror = () => { av.style.visibility = "hidden"; };
+    av.onload = () => pinScroll(p);
+    line.appendChild(av);
+  }
+  line.appendChild(txt);
+  return line;
 }
 // ---- per-column roster faces (green ring on whoever's speaking, replaces "N speaking") ----
 const RFACE_SLOT = 26;   // avatar (22px) + gap (4px)
@@ -778,40 +1384,22 @@ function renderColumnRoster(p) {
 function applyDirection() {
   const top = newestTop();
   Object.values(panels).forEach((p) => {
-    if (p.newestTop !== top) {
-      p.newestTop = top;
-      Array.from(p.body.children).reverse().forEach((r) => p.body.appendChild(r));
-    }
+    p.newestTop = top;
     if (p.jump) p.jump.textContent = jumpLabel(p.newestTop);
     if (p.flipBtn) p.flipBtn.title = flipTitle(p.newestTop);
     p.pinned = true; p.lastAuto = Date.now();
-    p.body.scrollTop = p.newestTop ? 0 : p.body.scrollHeight;
+    renderPanel(p, { forcePin: true });
   });
 }
 
 function renderEvent(m) {
   if (CFG && CFG.voice_events === false) return;
   const p = panelFor(m.client);
-  const line = document.createElement("div"); line.className = "tevent";
-  const meta = EVENT_ICON[m.event];
-  const ico = document.createElement("span");
-  ico.innerHTML = icon(meta ? meta[0] : "info");
-  if (meta) ico.style.color = meta[1];
-  const txt = document.createElement("span"); txt.className = "etxt";
-  const ts = (CFG && CFG.ui && CFG.ui.show_timestamps) ? '<span class="ts"></span> ' : "";
-  txt.innerHTML = ts + "<b></b> " + escapeHtml(EVENT_LABEL[m.event] || m.event);
-  txt.querySelector("b").textContent = m.name || "someone";
-  if (ts) txt.querySelector(".ts").textContent = fmtTs(m.ts || Date.now());
-  line.appendChild(ico);
-  if (m.avatar) {                                    // show the user's avatar on the event row
-    const av = document.createElement("img"); av.src = m.avatar; av.alt = "";
-    av.onerror = () => { av.style.visibility = "hidden"; };
-    av.onload = () => pinScroll(p);                  // keep the bottom pinned once the avatar lays out
-    line.appendChild(av);
-  }
-  line.appendChild(txt);
-  placeRow(p, line);
-  capLines(p); pinScroll(p);
+  p.items.push({
+    type: "event", seq: ++itemSeq, event: m.event, name: m.name, avatar: m.avatar,
+    client: m.client, ts: m.ts || Date.now()
+  });
+  renderPanel(p);
 }
 
 function fmtTs(ts) {
@@ -825,40 +1413,33 @@ function fmtTs(ts) {
 
 function renderTranscript(m) {
   const p = panelFor(m.client);
-  let line = p.cur[m.userId];
-  if (!line) {
-    line = document.createElement("div"); line.className = "tline";
-    line.dataset.uid = m.userId;            // so retroactive renames can find this line
-    const img = document.createElement("img");
-    img.onerror = () => { img.style.visibility = "hidden"; };
-    img.onload = () => pinScroll(p);                  // re-pin once the avatar lays out
-    const body = document.createElement("div"); body.className = "body";
-    body.innerHTML = `<div class="who"><span class="ts"></span><span class="nm"></span></div><div class="txt"></div>`;
-    line.appendChild(img); line.appendChild(body);
-    placeRow(p, line);                                // newest at the configured end
-    p.cur[m.userId] = line;
+  let item = p.active[m.userId];
+  if (!item) {
+    item = {
+      type: "transcript", seq: ++itemSeq, userId: m.userId, name: m.name, avatar: m.avatar,
+      text: "", isFinal: false, client: m.client, kind: m.kind || "voice", ts: m.ts || Date.now(),
+      resolved: m.resolved, locked: m.locked
+    };
+    p.active[m.userId] = item;
   }
-  applySpeaker(line, m.userId, m.client);             // avatar + name (or Unknown) + click-to-assign
-  const showTs = CFG && CFG.ui && CFG.ui.show_timestamps;
-  const tsEl = line.querySelector(".ts");
-  tsEl.style.display = showTs ? "" : "none";
-  if (showTs) tsEl.textContent = fmtTs(m.ts || Date.now());
-  line.classList.toggle("interim", !m.isFinal);
-  const txEl = line.querySelector(".txt");
-  const text = m.text || (m.isFinal ? "" : "…");
-  txEl.dataset.text = text;                          // raw text kept for retroactive re-highlight
-  setHl(txEl, text, matchKeyword(text));
-  capLines(p); pinScroll(p);
+  item.name = m.name !== undefined ? m.name : item.name;
+  item.avatar = m.avatar !== undefined ? m.avatar : item.avatar;
+  item.text = m.text || (m.isFinal ? "" : "...");
+  item.isFinal = !!m.isFinal;
+  item.client = m.client || item.client;
+  item.kind = m.kind || item.kind || "voice";
+  item.ts = m.ts || item.ts || Date.now();
+  item.resolved = m.resolved !== undefined ? m.resolved : item.resolved;
+  item.locked = m.locked !== undefined ? m.locked : item.locked;
   if (m.isFinal) {
-    delete p.cur[m.userId];
-    if (!m.text) { line.remove(); } else { p.n++; p.cnt.textContent = p.n; }
+    delete p.active[m.userId];
+    if (m.text) { p.items.push(item); p.n++; }
   }
+  renderPanel(p);
 }
 
 function applyRename(m) {
-  const esc = (window.CSS && CSS.escape) ? CSS.escape(m.userId) : String(m.userId).replace(/"/g, '\\"');
-  document.querySelectorAll('#transcript .tline[data-uid="' + esc + '"]')
-    .forEach((line) => applySpeaker(line, m.userId, m.client));
+  renderAllPanels();
 }
 
 // paint a transcript line's avatar + name from the source's current identity, and wire the
@@ -985,6 +1566,7 @@ function escapeHtml(s) { const d = document.createElement("div"); d.textContent 
 async function boot() {
   API = window.pywebview.api;
   initPills();
+  initSearch();
   initAutosave();
   CFG = await API.get_config();
   await populateDevices();

@@ -32,7 +32,7 @@
   button.sec { background:var(--panel2); color:var(--txt); }
   button.danger { background:var(--bad); }
   button:disabled { opacity:.5; cursor:default; }
-  .tabs { display:flex; gap:4px; padding:8px 14px 0; background:var(--panel); flex:0 0 auto; }
+  .tabs { display:flex; align-items:center; gap:4px; padding:8px 14px 0; background:var(--panel); flex:0 0 auto; }
   .tab { padding:7px 14px; cursor:pointer; color:var(--mut); border-bottom:2px solid transparent; font-weight:600; }
   .tab.active { color:var(--txt); border-color:var(--accent); }
   .tab.highlight:not(.active) { color:var(--accent); animation:tabnudge 1.3s ease-in-out infinite; }
@@ -40,6 +40,7 @@
   main { padding:14px; flex:1; min-height:0; display:flex; flex-direction:column; }
   .view { display:none; flex:1; min-height:0; }
   #v-live.active, #v-log.active { display:flex; }
+  #v-live { flex-direction:column; gap:10px; }
   #v-settings.active, #v-speakers.active { display:block; overflow-y:auto; }
   .card { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:14px; margin-bottom:12px; }
   .card h2 { font-size:12px; text-transform:uppercase; letter-spacing:.6px; color:var(--mut); margin:0 0 10px; }
@@ -72,6 +73,45 @@
   .toggrow .sub { color:var(--mut); font-size:11px; }
   #log { background:#111214; border:1px solid var(--line); border-radius:8px; padding:10px;
          flex:1; min-height:0; overflow:auto; font:11px/1.4 ui-monospace,Consolas,monospace; color:#b5bac1; white-space:pre-wrap; }
+  .search-wrap { position:relative; flex:0 0 auto; margin-left:auto; align-self:center; margin-bottom:6px; }
+  .searchbox { display:flex; align-items:center; gap:6px; width:34px; min-height:32px; background:var(--panel2);
+               border:1px solid var(--line); border-radius:999px; padding:5px 8px; overflow:hidden;
+               transition:width .16s ease,border-radius .16s ease; }
+  .search-wrap.expanded .searchbox { width:min(420px, 42vw); border-radius:8px; }
+  .searchbox:focus-within { border-color:var(--accent); }
+  .search-ic { color:var(--mut); display:flex; align-items:center; justify-content:center; width:16px; height:16px; flex:0 0 16px; }
+  .search-ic .lu { width:16px; height:16px; }
+  .searchbox input { flex:1; min-width:140px; background:transparent; border:0; color:var(--txt);
+                     font:inherit; outline:none; padding:3px 2px; }
+  .search-wrap:not(.expanded) .searchbox input { flex:0 0 0; width:0; min-width:0; opacity:0; padding:0; pointer-events:none; }
+  .search-wrap:not(.expanded) .search-chip { display:none; }
+  .search-clear { flex:0 0 auto; color:var(--mut); cursor:pointer; border-radius:5px; padding:2px 6px;
+                  font-size:15px; line-height:1; display:none; }
+  .search-clear .lu { width:14px; height:14px; }
+  .search-clear:hover { color:var(--txt); background:rgba(255,255,255,.07); }
+  .search-chip { display:inline-flex; align-items:center; gap:5px; min-width:0; max-width:230px;
+                 background:#404249; color:var(--txt); border:1px solid rgba(255,255,255,.08);
+                 border-radius:999px; padding:2px 6px 2px 8px; font-size:12px; white-space:nowrap; }
+  .search-chip b { color:#fff; font-weight:600; }
+  .search-chip img { width:18px; height:18px; border-radius:50%; flex:0 0 18px; background:var(--panel); object-fit:cover; }
+  .search-chip .sc-name { overflow:hidden; text-overflow:ellipsis; }
+  .search-chip .sc-x { cursor:pointer; color:var(--mut); width:15px; height:15px; border-radius:50%;
+                       display:inline-flex; align-items:center; justify-content:center; line-height:1; }
+  .search-chip .sc-x .lu { width:12px; height:12px; }
+  .search-chip .sc-x:hover { color:#fff; background:rgba(255,255,255,.13); }
+  .search-suggest { position:absolute; z-index:70; top:calc(100% + 6px); right:0; width:100%; min-width:100%;
+                    max-height:280px; overflow:auto; background:var(--panel); border:1px solid var(--line);
+                    border-radius:8px; box-shadow:0 12px 30px rgba(0,0,0,.55); padding:6px; display:none; }
+  .search-suggest.show { display:block; }
+  .ss-item { display:flex; align-items:center; gap:8px; padding:7px; border-radius:6px; cursor:pointer; }
+  .ss-item:hover, .ss-item.active { background:var(--panel2); }
+  .ss-item img { width:24px; height:24px; border-radius:50%; flex:0 0 24px; background:var(--panel2); object-fit:cover; }
+  .ss-op { width:24px; height:24px; flex:0 0 24px; border-radius:6px; background:#404249; color:#fff;
+           display:flex; align-items:center; justify-content:center; }
+  .ss-op .lu { width:15px; height:15px; }
+  .ss-main { min-width:0; flex:1; display:flex; flex-direction:column; }
+  .ss-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:600; }
+  .ss-handle { color:var(--mut); font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   #transcript { display:flex; gap:10px; flex:1; min-height:0; overflow-x:auto; align-items:stretch; }
   .tcol { flex:1 1 300px; min-width:270px; max-width:560px; display:flex; flex-direction:column;
           background:var(--panel2); border:1px solid var(--line); border-radius:8px; position:relative; overflow:hidden; }
@@ -114,6 +154,9 @@
   .tcol-body::-webkit-scrollbar { width:8px; } .tcol-body::-webkit-scrollbar-thumb { background:#1a1b1e; border-radius:8px; }
   .jump { position:absolute; bottom:10px; left:50%; transform:translateX(-50%); padding:5px 12px; border-radius:999px;
           font-size:11px; box-shadow:0 2px 10px rgba(0,0,0,.5); display:none; }
+  .load-older { align-self:center; flex:0 0 auto; padding:5px 11px; font-size:11px; border-radius:999px;
+                background:#404249; color:var(--txt); margin:2px 0; }
+  .load-older:hover { background:#4a4d55; }
   .tline { display:flex; gap:8px; align-items:flex-start; }
   .tline img { width:28px; height:28px; border-radius:50%; flex:0 0 28px; background:var(--panel2); }
   .tline .body { flex:1; }
@@ -289,6 +332,14 @@
   <div class="tab" data-v="speakers">Speakers</div>
   <div class="tab" data-v="settings">Settings</div>
   <div class="tab" data-v="log">Console</div>
+  <div class="search-wrap" id="search-wrap">
+    <div id="searchbox" class="searchbox">
+      <span id="search-ic" class="search-ic"></span>
+      <input id="search-input" type="text" autocomplete="off" spellcheck="false" placeholder="Search" />
+      <span id="search-clear" class="search-clear" title="Clear search"></span>
+    </div>
+    <div id="search-suggest" class="search-suggest"></div>
+  </div>
 </div>
 
 <main>
