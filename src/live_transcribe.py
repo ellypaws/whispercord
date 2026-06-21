@@ -108,6 +108,59 @@ def _norm(s):
     return s.lower().strip().strip(".!?,…\"' ").strip()
 DROP = set(_norm(p) for p in GATE["drop_phrases"])
 
+# --- uncensor: undo Whisper's self-bleeping ---------------------------------
+# Whisper is trained on caption/subtitle data that bleeps profanity, so it sometimes emits the
+# masked form ("f*****g", "sh*t"). When `uncensor` is on we map those masked tokens back to the
+# word they almost certainly are. The word list lives in config.json (`uncensor_words`, shipped as
+# a default in config.DEFAULTS), so it reaches every config via the defaults merge yet stays
+# hand-editable/deletable - the UI only exposes the on/off switch, never the list.
+#
+# For each target word we build a per-letter skeleton: every position is either the real letter or
+# a mask glyph, the token length is exact, and (enforced in the sub callback) >=1 position is
+# actually masked - so clean text and unrelated words can't match (a redacted name won't become a
+# swear, and a plainly-typed word is left alone).
+UNCENSOR = bool(CFG.get("uncensor", False))
+_MASK_CHARS = "*✱•·@#$%!"                        # glyphs Whisper substitutes for bleeped letters
+_MASK = "[" + re.escape(_MASK_CHARS) + "]"
+_EDGE = r"[\w" + re.escape(_MASK_CHARS) + "]"     # token must not abut another letter/mask glyph
+
+
+def _compile_uncensor(words):
+    """Build (regex, word) rules from a plain word list. Longest words first so a long skeleton
+    (motherf***er) wins before a shorter one (f***) can grab a slice of it."""
+    rules = []
+    for w in words or []:
+        w = (w or "").strip()
+        if not w:
+            continue
+        body = "".join("(?:%s|%s)" % (re.escape(c), _MASK) for c in w)
+        rules.append((re.compile("(?<!%s)%s(?!%s)" % (_EDGE, body, _EDGE), re.I), w))
+    rules.sort(key=lambda t: -len(t[1]))
+    return rules
+
+
+_UNCENSOR_RULES = _compile_uncensor(CFG.get("uncensor_words", []))
+
+
+def _recase(orig, repl):
+    letters = [c for c in orig if c.isalpha()]
+    if len(letters) >= 2 and all(c.isupper() for c in letters):   # F***ING -> FUCKING
+        return repl.upper()
+    if letters and letters[0].isupper():                          # F*** -> Fuck
+        return repl[:1].upper() + repl[1:]
+    return repl
+
+
+def uncensor_text(s):
+    for rx, repl in _UNCENSOR_RULES:
+        def _sub(m, r=repl):
+            tok = m.group(0)
+            if not any(ch in _MASK_CHARS for ch in tok):   # a plainly-typed word, not bleeped
+                return tok
+            return _recase(tok, r)
+        s = rx.sub(_sub, s)
+    return s
+
 # ---------------- audio capture (Frida) ----------------
 buffers = collections.defaultdict(bytearray)   # src -> int16 mono 16k bytes
 last_frame = collections.defaultdict(float)
@@ -160,10 +213,14 @@ def apply_live_config(cfg):
     relay-port are deliberately NOT touched here — those still require a restart."""
     global CAP, CAP_VOICE, CAP_SCREEN, SCREEN_DETECT_S, MAX_STALE_S, SCREEN_LABEL
     global GATE, GATE_DBFS, USE_VAD, NO_SPEECH, MIN_LOGPROB, DROP, REQUIRE_SPEAKING, SPK_GRACE_S
-    global LANGUAGE, BEAM, SELF
+    global LANGUAGE, BEAM, SELF, UNCENSOR, _UNCENSOR_RULES
     try:
         if "voice_events" in cfg:
             CFG["voice_events"] = bool(cfg["voice_events"])   # mapping_thread reads this each pass
+        if "uncensor" in cfg:
+            UNCENSOR = bool(cfg["uncensor"])                  # transcribe() reads this each segment
+        if "uncensor_words" in cfg:
+            _UNCENSOR_RULES = _compile_uncensor(cfg["uncensor_words"])
         # overlay/alert/inject prefs: keep CFG fresh so the next overlay re-inject uses them
         for k in ("overlay", "alerts", "inject_overlay"):
             if k in cfg:
@@ -1003,6 +1060,8 @@ def main():
             txt = s.text.strip()
             if not txt:
                 continue
+            if UNCENSOR:
+                txt = uncensor_text(txt)
             low_conf = (s.no_speech_prob > NO_SPEECH) or (s.avg_logprob < MIN_LOGPROB)
             # known silence-hallucination phrase + (low confidence or near-quiet) -> drop
             if _norm(txt) in DROP and (low_conf or level < GATE_DBFS + 8):

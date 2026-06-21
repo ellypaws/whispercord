@@ -218,6 +218,7 @@ function fillForm(c) {
   $("g_vad").checked = g.vad !== false;
   $("g_reqspeak").checked = g.require_speaking !== false;
   $("g_drop").value = (g.drop_phrases || []).join(", ");
+  $("g_uncensor").checked = !!c.uncensor;
   const a = c.alerts || {};
   kwList = (a.keywords || []).slice(); renderPills();
   $("a_sound").checked = a.sound !== false;
@@ -257,6 +258,7 @@ function readForm() {
   return Object.assign({}, CFG, {
     whisper_model: $("whisper_model").value,
     voice_events: $("ui_events").checked,
+    uncensor: $("g_uncensor").checked,
     capture: Object.assign({}, CFG.capture, { screenshare: $("cap_screen").checked }),
     language: $("adv_lang").value.trim(),
     beam_size: parseInt($("adv_beam").value, 10) || 1,
@@ -365,6 +367,7 @@ const LIVE_FIELDS = new Set([
   "cap_screen",                                            // transcribe stream audio
   "self_en", "self_unmute", "self_vad", "self_device",     // own-voice (incl. live device switch)
   "g_dbfs", "g_vad", "g_reqspeak", "g_drop",               // silence gating
+  "g_uncensor",                                            // restore self-bleeped profanity
   "adv_lang", "adv_beam",                                  // language + beam size
 ]);
 // overlay-only settings: applied by re-injecting the overlay into Discord, NOT by an engine restart
@@ -1049,6 +1052,7 @@ const HELP = {
   g_vad: "**Silero VAD** trims non-speech regions from each chunk before transcription - fewer hallucinations on noise.",
   g_reqspeak: "**End when not speaking.** Closes an utterance once Discord's per-user speaking indicator goes quiet (after a short grace), which stops screenshare/comfort-noise bleed from transcribing forever. If your speech is being split into too many lines, turn this off to segment purely by audio.",
   g_drop: "**Drop phrases** (comma-separated) that Whisper hallucinates on silence (e.g. `thank you, bye`). Dropped only when the audio is quiet or low-confidence.",
+  g_uncensor: "**Uncensor profanity.** Restore swear words Whisper self-bleeps into masked text. The word list is configured in `config.json`. Applies live, no restart.",
   kw: "**Keyword alerts.** Words that get **highlighted** + a beep when spoken (e.g. your name). Editing these re-highlights the existing transcript live.",
   a_sound: "Play a short **beep** when a keyword is detected.",
   a_highlight: "**Highlight color** used to mark keyword hits in the transcript and overlay.",

@@ -34,6 +34,12 @@ DEFAULTS = {
         "log_autoscroll": True,
     },
     "voice_events": True,               # emit join/leave/mute/deafen/stream events per user
+    "uncensor": False,                  # restore profanity Whisper self-bleeps ("f*****g" -> "fucking")
+    "uncensor_words": [                 # words to un-bleep when `uncensor` is on; edit/delete here
+        "motherfucker", "fucking", "fucker", "fucked", "fuck",
+        "bullshit", "shit", "bitch", "dick", "damn",
+        "asshole", "ass", "cunt", "pussy", "bastard",
+    ],
     "ui": {                             # desktop-wrapper display prefs
         "show_timestamps": True,
         "timestamp_format": "clock",    # clock (HH:MM:SS) | relative (12s ago)

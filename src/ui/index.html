@@ -80,7 +80,7 @@
   .tcol-h .cdot { width:8px; height:8px; border-radius:50%; background:var(--accent); }
   .tcol-h .cnt { margin-left:auto; color:var(--mut); font-weight:400; font-size:11px; }
   /* per-column roster faces (green ring = speaking; replaces the old "N speaking" text) */
-  .tcol-h .tcol-roster { flex:1; min-width:0; display:flex; align-items:center; gap:4px; overflow:hidden; }
+  .tcol-h .tcol-roster { flex:1; min-width:0; display:flex; align-items:center; gap:4px; overflow-x:clip; overflow-y:visible; }
   .tcol-roster.bottom { flex:0 0 auto; display:flex; align-items:center; gap:4px; overflow:hidden;
                         padding:6px 10px; border-top:1px solid var(--line); background:#2b2d31; }
   .rface { position:relative; width:22px; height:22px; flex:0 0 22px; border-radius:50%; }
@@ -399,6 +399,8 @@
       <div class="hint">End an utterance once Discord's speaking indicator goes quiet. Off = segment by audio only (turn off if speech is being split into too many lines).</div>
       <div class="row"><label>Drop phrases</label>
         <input type="text" id="g_drop" placeholder="thank you, bye, you" /></div>
+      <div class="row"><label>Uncensor profanity</label>
+        <label class="switch"><input type="checkbox" id="g_uncensor" /><span class="sl"></span></label></div>
     </div>
 
     <div class="card">
