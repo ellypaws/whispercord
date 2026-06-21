@@ -37,6 +37,18 @@ def cuda_present():
     return have_blas and have_dnn
 
 
+def nvidia_gpu_present():
+    """True only when an NVIDIA CUDA device is actually usable. CTranslate2 (the faster-whisper
+    backend) supports NVIDIA CUDA ONLY — never AMD/Intel — so this is the authoritative answer to
+    "can device=cuda work here". It queries the CUDA driver and needs no cuBLAS/cuDNN, so it's safe
+    to call before the runtime download (and returns False on AMD/Intel/CPU-only machines)."""
+    try:
+        import ctranslate2
+        return ctranslate2.get_cuda_device_count() > 0
+    except Exception:
+        return False
+
+
 def _wheel_url(pkg):
     data = json.load(urllib.request.urlopen("https://pypi.org/pypi/%s/json" % pkg, timeout=30))
     cands = [u for u in data["urls"]

@@ -880,17 +880,28 @@ def mapping_thread():
 
 # ---------------- transcription ----------------
 def main():
+    global DEVICE, COMPUTE
     load_user_cache()
     if DEVICE == "cuda":
-        try:
-            from cuda_setup import ensure_cuda, cuda_present
-            if not cuda_present():
-                print("[cuda] GPU runtime not found - downloading (~1 GB, first run only)...")
-                emit_progress("cuda", "Downloading GPU runtime (first run, ~1 GB)", 0)
-                ensure_cuda(print, on_progress=lambda pct, label: emit_progress("cuda", label, pct))
-            add_cuda_dlls()
-        except Exception as e:
-            print("[cuda] setup failed (%s) - GPU may not load" % e)
+        from cuda_setup import nvidia_gpu_present, ensure_cuda, cuda_present
+        if not nvidia_gpu_present():
+            # CUDA is NVIDIA-only (CTranslate2 has no AMD/Intel backend). Don't pull the ~1 GB
+            # NVIDIA runtime onto a machine that can't use it — fall back to CPU instead.
+            print("[gpu] device=cuda but no NVIDIA GPU detected (CUDA is NVIDIA-only; "
+                  "AMD/Intel GPUs are not supported) - using CPU")
+            emit_progress("cuda", "No NVIDIA GPU - using CPU")
+            DEVICE = "cpu"
+            if COMPUTE in ("float16", "int8_float16"):   # GPU-only compute types -> CPU-safe default
+                COMPUTE = "int8"
+        else:
+            try:
+                if not cuda_present():
+                    print("[cuda] GPU runtime not found - downloading (~1 GB, first run only)...")
+                    emit_progress("cuda", "Downloading GPU runtime (first run, ~1 GB)", 0)
+                    ensure_cuda(print, on_progress=lambda pct, label: emit_progress("cuda", label, pct))
+                add_cuda_dlls()
+            except Exception as e:
+                print("[cuda] setup failed (%s) - GPU may not load" % e)
     print("[whisper] loading '%s' on %s (%s)..." % (MODEL, DEVICE, COMPUTE))
     # All models live in one app-owned cache. A model already there is loaded with
     # local_files_only so it NEVER re-downloads (switching back and forth is free); only a
@@ -902,16 +913,26 @@ def main():
     else:
         print("[whisper] '%s' not cached - downloading once into %s" % (MODEL, mr))
         emit_progress("model", "Downloading speech model '%s' (first use)" % MODEL)
+    def _load(dev, comp, local_only):
+        return WhisperModel(MODEL, device=dev, compute_type=comp,
+                            download_root=mr, local_files_only=local_only)
     try:
-        model = WhisperModel(MODEL, device=DEVICE, compute_type=COMPUTE,
-                             download_root=mr, local_files_only=cached)
+        model = _load(DEVICE, COMPUTE, cached)
     except Exception as e:
-        if cached:                     # cache looked present but was incomplete -> refetch
-            print("[whisper] cached load failed (%s) - refetching" % e)
-            emit_progress("model", "Repairing speech model '%s'" % MODEL)
-            model = WhisperModel(MODEL, device=DEVICE, compute_type=COMPUTE,
-                                 download_root=mr, local_files_only=False)
-        else:
+        print("[whisper] load failed (%s)" % e)
+        model = None
+        if cached:                     # cache looked present but was incomplete -> repair, same device
+            try:
+                emit_progress("model", "Repairing speech model '%s'" % MODEL)
+                model = _load(DEVICE, COMPUTE, False)
+            except Exception as e2:
+                print("[whisper] refetch failed (%s)" % e2)
+        if model is None and DEVICE == "cuda":   # GPU still won't load -> degrade to CPU, don't crash
+            print("[whisper] CUDA load failed - falling back to CPU")
+            emit_progress("model", "GPU load failed - using CPU")
+            DEVICE, COMPUTE = "cpu", "int8"
+            model = _load("cpu", "int8", False)
+        if model is None:
             raise
     print("[whisper] ready (lang=%s, beam=%d)" % (LANGUAGE or "auto", BEAM))
     emit_progress("ready", "Engine ready", 100, done=True)
