@@ -40,20 +40,8 @@ function emojiAvatar(src) {   // render the per-source emoji as a round avatar (
 const DEFAULT_AV_GRAY = "https://cdn.discordapp.com/embed/avatars/1.png";   // Discord's gray default avatar
 const badAvatars = new Set();   // real avatar URLs that failed to load -> fall back to the emoji avatar
 const rosters = {};   // client -> [{userId,name,avatar,stream,mute,deaf,video}]  (the call's members)
-const speakSeen = {}; // client -> Map(userId -> last time seen speaking)  (drives the green ring)
-const SPEAK_HOLD = 900;   // ms to hold the ring after last seen speaking (smooths indicator flicker)
+const speakingNow = {}; // client -> Set(userId) currently speaking (persists until the engine changes it)
 const EMPTY_SET = new Set();
-function noteSpeaking(client, ids) {
-  const m = speakSeen[client] || (speakSeen[client] = new Map());
-  const now = Date.now();
-  for (const uid of (ids || [])) m.set(uid, now);
-}
-function currentSpeaking(client) {
-  const m = speakSeen[client]; if (!m) return EMPTY_SET;
-  const now = Date.now(); const set = new Set();
-  for (const [uid, t] of m) if (now - t < SPEAK_HOLD) set.add(uid);
-  return set;
-}
 const sources = {};   // src -> {client,name,avatar,resolved,locked,kind,ts}  (live speakers seen)
 
 // ---------- inline Lucide icons (offline; 24x24 stroke) ----------
@@ -88,25 +76,34 @@ const EVENT_ICON = {
   stream_on: ["screen-share", "#5865f2"], stream_off: ["screen-share-off", "#949ba4"],
 };
 
-// ---------- keyword highlighting ----------
+// ---------- keyword highlighting (whole-word, so "elly" doesn't fire on "belly") ----------
+const _kwReCache = {};
+function kwRe(k) {   // case-insensitive, global, not flanked by word characters
+  return _kwReCache[k] || (_kwReCache[k] =
+    new RegExp("(?<!\\w)" + k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "(?!\\w)", "gi"));
+}
 function matchKeyword(t) {
-  const ks = kwList.map((k) => String(k).toLowerCase()).filter(Boolean);
-  if (!ks.length || !t) return null;
-  const l = t.toLowerCase();
-  for (const k of ks) if (l.includes(k)) return k;
+  if (!t || !kwList.length) return null;
+  for (const raw of kwList) {
+    const k = String(raw).toLowerCase(); if (!k) continue;
+    const re = kwRe(k); re.lastIndex = 0;
+    if (re.test(t)) return k;
+  }
   return null;
 }
-function setHl(el, text, kw) {            // render text into el, wrapping kw matches in <mark>
+function setHl(el, text, kw) {            // render text into el, wrapping whole-word kw matches in <mark>
   el.textContent = "";
-  if (!kw) { el.textContent = text || ""; return; }
-  const low = (text || "").toLowerCase(); let i = 0;
-  while (true) {
-    const j = low.indexOf(kw, i);
-    if (j < 0) { el.appendChild(document.createTextNode(text.slice(i))); break; }
-    el.appendChild(document.createTextNode(text.slice(i, j)));
-    const m = document.createElement("mark"); m.textContent = text.slice(j, j + kw.length); el.appendChild(m);
-    i = j + kw.length;
+  const t = text || "";
+  if (!kw) { el.textContent = t; return; }
+  const re = kwRe(kw); re.lastIndex = 0;
+  let i = 0, mch;
+  while ((mch = re.exec(t)) !== null) {
+    if (mch.index > i) el.appendChild(document.createTextNode(t.slice(i, mch.index)));
+    const m = document.createElement("mark"); m.textContent = mch[0]; el.appendChild(m);
+    i = mch.index + mch[0].length;
+    if (mch[0].length === 0) re.lastIndex++;
   }
+  if (i < t.length) el.appendChild(document.createTextNode(t.slice(i)));
 }
 // re-run highlighting over every transcript line after a keyword edit
 function rehighlightAll() {
@@ -623,7 +620,9 @@ function connectRelay() {
       rosters[m.client] = m.members || [];
       renderColumnRoster(panelFor(m.client));  // ensure the column exists so the faces can show
     } else if (m.type === "speaking") {
-      noteSpeaking(m.client, m.ids);           // the 250ms ticker repaints; hold smooths flicker
+      speakingNow[m.client] = new Set(m.ids || []);
+      const p = panels[(m.client || "").toLowerCase()];
+      if (p) renderColumnRoster(p);
     }
   };
 }
@@ -747,7 +746,7 @@ const totalW = (list) => list.reduce((s, m) => s + memberW(m), 0);
 function renderColumnRoster(p) {
   if (!p) return;
   const members = (rosters[p.client] || []).slice().sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")));
-  const speaking = currentSpeaking(p.client);
+  const speaking = speakingNow[p.client] || EMPTY_SET;
   let host, list, more = 0;
   if (!members.length) {
     host = p.rosterHead; list = [];
@@ -1000,7 +999,6 @@ async function boot() {
   $("updatebar-btn").innerHTML = icon("download") + "Update";
   setInterval(refreshEngine, 3000);
   setInterval(renderSpeakers, 1500);
-  setInterval(() => { for (const k in panels) renderColumnRoster(panels[k]); }, 250);  // ring updates + hold
   document.addEventListener("click", closeAssign);
   window.addEventListener("resize", closeAssign);
   checkUpdate();

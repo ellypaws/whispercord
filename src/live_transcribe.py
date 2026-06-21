@@ -673,9 +673,10 @@ def mapping_thread():
                     spk_poll[client] = now
                 for _uid in speaking:
                     last_speaking[_uid] = now
-                # push who's speaking every tick (not diffed) so the UI always has the current set;
-                # the UI applies a short hold to smooth any flicker in Discord's own indicator
-                if client:
+                # push who's speaking to the UI when the set changes (persists until the next change)
+                cur_spk = frozenset(speaking)
+                if client and cur_spk != st0.get("spk_bcast"):
+                    st0["spk_bcast"] = cur_spk
                     broadcast({"type": "speaking", "client": client, "ids": list(speaking)})
             except Exception:
                 st0["fails"] += 1

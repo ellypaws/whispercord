@@ -129,18 +129,28 @@
   const speakerDisplay = (m) => (m.resolved === false)
     ? { name: unknownLabel(m.userId), avatar: emojiAvatar(m.userId), locked: !!m.locked }
     : { name: m.name || "unknown", avatar: (m.avatar || emojiAvatar(m.userId)), locked: !!m.locked };
-  const matchKeyword = (t) => { if (!KEYWORDS.length || !t) return null; const l = t.toLowerCase(); for (const k of KEYWORDS) if (l.includes(k)) return k; return null; };
+  // whole-word keyword match, so "elly" doesn't fire on "belly"
+  const _kwReCache = {};
+  const kwRe = (k) => _kwReCache[k] || (_kwReCache[k] =
+    new RegExp("(?<!\\w)" + k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "(?!\\w)", "gi"));
+  const matchKeyword = (t) => {
+    if (!KEYWORDS.length || !t) return null;
+    for (const k of KEYWORDS) { const re = kwRe(k); re.lastIndex = 0; if (re.test(t)) return k; }
+    return null;
+  };
   function setText(el, text, kw) {
     el.textContent = "";
-    if (!kw) { el.textContent = text; return; }
-    const low = text.toLowerCase(); let i = 0;
-    while (true) {
-      const j = low.indexOf(kw, i);
-      if (j < 0) { el.appendChild(document.createTextNode(text.slice(i))); break; }
-      el.appendChild(document.createTextNode(text.slice(i, j)));
-      const m = document.createElement("mark"); m.textContent = text.slice(j, j + kw.length); el.appendChild(m);
-      i = j + kw.length;
+    const t = text || "";
+    if (!kw) { el.textContent = t; return; }
+    const re = kwRe(kw); re.lastIndex = 0;
+    let i = 0, mch;
+    while ((mch = re.exec(t)) !== null) {
+      if (mch.index > i) el.appendChild(document.createTextNode(t.slice(i, mch.index)));
+      const m = document.createElement("mark"); m.textContent = mch[0]; el.appendChild(m);
+      i = mch.index + mch[0].length;
+      if (mch[0].length === 0) re.lastIndex++;
     }
+    if (i < t.length) el.appendChild(document.createTextNode(t.slice(i)));
   }
   function beep() {
     if (!ALERT_SOUND) return;
