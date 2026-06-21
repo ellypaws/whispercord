@@ -16,7 +16,10 @@ ONEFILE = os.environ.get("VT_ONEFILE", "0") == "1"  # set VT_ONEFILE=1 for a sin
 datas, binaries, hiddenimports = [], [], []
 
 # Heavy ML / media packages: grab code, data assets, and native libs (but NOT nvidia CUDA).
-for pkg in ("faster_whisper", "ctranslate2", "onnxruntime", "tokenizers", "av"):
+# ctranslate2 + onnxruntime are NOT bundled — downloaded on first CTranslate2 use by pkg_setup.py
+# (see excludes). av (PyAV, ~60 MB FFmpeg) is unused at runtime; a stub in src/_stubs satisfies
+# faster-whisper's load-time `import av`. The whisper.cpp GPU runtime is delegated too.
+for pkg in ("faster_whisper", "tokenizers"):
     try:
         d, b, h = collect_all(pkg)
         datas += d
@@ -34,14 +37,14 @@ for pkg in ("webview", "pystray", "PIL"):
         pass
 
 hiddenimports += [
-    "frida", "_frida",
+    "frida",     # frida>=17 ships the native _frida.pyd inside the package (no top-level _frida)
     "websockets", "websockets.sync", "websockets.sync.client",
     "webview.platforms.edgechromium", "webview.platforms.winforms",
     "clr", "clr_loader", "pythonnet",
     "pystray._win32",
     "numpy", "pefile", "capstone",
-    # device routing + backends (whispercpp_ffi/setup are imported lazily for hip/vulkan)
-    "gpu_detect", "backends", "cuda_setup", "whispercpp_ffi", "whispercpp_setup",
+    # device routing + first-run runtime downloaders + backends (whispercpp/pkg lazy-imported)
+    "gpu_detect", "backends", "cuda_setup", "pkg_setup", "whispercpp_ffi", "whispercpp_setup",
 ]
 
 # Our own source + resources (entry script lives in src/).
@@ -50,6 +53,7 @@ hiddenimports += [
 datas += [
     ("src/overlay.js", "."),
     ("src/ui", "ui"),
+    ("src/_stubs", "_stubs"),     # av stub (pkg_setup puts it on sys.path when PyAV is absent)
     ("assets", "assets"),
 ]
 
@@ -61,7 +65,10 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[],
     runtime_hooks=[],
-    excludes=["tkinter", "pytest", "nvidia"],
+    # Downloaded on first run (pkg_setup.py) or unused, so keep them out of the build:
+    #   ctranslate2 / onnxruntime — large native wheels;  av — unused (stubbed);
+    #   sympy / mpmath — only pulled by onnxruntime's shape-infer tool, never at runtime.
+    excludes=["tkinter", "pytest", "nvidia", "ctranslate2", "onnxruntime", "av", "sympy", "mpmath"],
     noarchive=False,
 )
 pyz = PYZ(a.pure)

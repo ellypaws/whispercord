@@ -41,10 +41,14 @@ def add_cuda_dlls():
             pass
 add_cuda_dlls()
 
+import pkg_setup
+pkg_setup.prepare()          # put downloaded ctranslate2/onnxruntime (+ av stub) on sys.path
+
 import numpy as np
 import frida
 import websockets
-from faster_whisper import WhisperModel
+# faster_whisper (+ its unbundled ctranslate2/onnxruntime/av deps) is imported lazily in main()'s
+# CTranslate2 branch, after pkg_setup.ensure_runtime() fetches the native runtime on first use.
 
 import paths
 import models as model_store
@@ -917,6 +921,14 @@ def main():
             DEVICE, COMPUTE = "cpu", "int8"
 
     if backend is None:
+        # CTranslate2 path (cuda/cpu): fetch the delegated ct2/onnxruntime runtime (not bundled),
+        # then import faster-whisper. AMD/Intel (whisper.cpp) never reaches here, so never fetches it.
+        emit_progress("runtime", "Preparing speech runtime…")
+        try:
+            pkg_setup.ensure_runtime(print, on_progress=lambda pct, label: emit_progress("runtime", label, pct))
+        except Exception as e:
+            print("[pkg] runtime setup failed (%s) - model may not load" % e)
+        from faster_whisper import WhisperModel
         print("[whisper] loading '%s' on %s (%s)..." % (MODEL, DEVICE, COMPUTE))
         # All models live in one app-owned cache. A model already there is loaded with
         # local_files_only so it NEVER re-downloads (switching back and forth is free); only a
