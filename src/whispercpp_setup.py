@@ -102,6 +102,9 @@ def ensure_lib(backend, gfx=None, log=print, on_progress=None):
         os.add_dll_directory(os.path.dirname(dll))
     except Exception:
         pass
+    tlib = os.path.join(os.path.dirname(dll), "rocblas", "library")   # HIP: rocBLAS Tensile kernels
+    if os.path.isdir(tlib):
+        os.environ["ROCBLAS_TENSILE_LIBPATH"] = tlib
     return dll
 
 
