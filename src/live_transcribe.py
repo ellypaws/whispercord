@@ -127,6 +127,8 @@ corr = collections.defaultdict(dict)           # src -> {uid: co-occurrence scor
 bind_votes = collections.defaultdict(lambda: collections.defaultdict(float))  # src -> {uid: naming votes}
 lock = threading.Lock()
 reinject_event = threading.Event()             # set by the relay when the UI asks to re-inject overlays
+manual_assign = {}                             # src -> {"userId":..} | {"name":..}: locked manual binding
+pending_assigns = collections.deque()          # relay -> mapping_thread queue: {src, userId?, name?, clear?}
 
 
 def kind_of(src):
@@ -379,6 +381,8 @@ def start_relay():
                     apply_live_config(obj.get("config") or {})    # live-apply restart-free settings
                 elif obj.get("type") == "reinjectOverlay":
                     reinject_event.set()                          # re-inject overlays without an engine restart
+                elif obj.get("type") == "assign":                 # manual speaker (re)assignment, applied by mapping_thread
+                    pending_assigns.append({k: obj.get(k) for k in ("src", "userId", "name", "clear")})
         except Exception:
             pass
         finally:
@@ -498,8 +502,8 @@ def mapping_thread():
             src2user[s] = info
             nm = display_name(s, info["name"])
             print("[map] %s [%s] -> %s" % (s[-6:], client, nm))
-            broadcast({"type": "rename", "userId": s, "name": nm,
-                       "avatar": info["avatar"], "client": client})
+            broadcast({"type": "rename", "userId": s, "name": nm, "avatar": info["avatar"],
+                       "client": client, "resolved": True, "locked": s in manual_assign})
 
     def set_kind(s, kind, client):
         """Change a source's voice/stream kind and re-broadcast its label if it's already
@@ -511,13 +515,16 @@ def mapping_thread():
         info = src2user.get(s)
         if info and info.get("userId"):
             broadcast({"type": "rename", "userId": s, "name": display_name(s, info["name"]),
-                       "avatar": info.get("avatar"), "client": client})
+                       "avatar": info.get("avatar"), "client": client,
+                       "resolved": True, "locked": s in manual_assign})
 
     def confirm_bind(s, uid, client, c, weight):
         """Accumulate naming evidence per source and bind to the identity with the MOST hits,
         replacing an existing name only when a challenger clearly leads it. A single blip (one
         stray ssrc-map read or correlation tick) can't flip a name that has been consistent; a
         genuine, sustained change still wins after it overtakes by NAME_SWITCH_MARGIN."""
+        if s in manual_assign:                 # the user pinned this source -> auto-detect can't touch it
+            return
         v = bind_votes[s]
         v[uid] = min(NAME_VOTE_CAP, v[uid] + weight)
         for u in list(v):                       # decay identities with no support this tick
@@ -584,6 +591,44 @@ def mapping_thread():
                 except Exception as e:
                     print("[overlay] reinject failed (%s): %s" % (_cl, e))
             print("[overlay] re-injected on request")
+        # apply any pending manual (re)assignments queued by the relay
+        while pending_assigns:
+            try:
+                req = pending_assigns.popleft()
+            except IndexError:
+                break
+            src = req.get("src")
+            if not src:
+                continue
+            cl = src_client.get(src)
+            if req.get("clear"):                          # hand the source back to auto-detect
+                manual_assign.pop(src, None); bind_votes.pop(src, None)
+                print("[assign] unlocked %s" % src[-6:])
+                broadcast({"type": "rename", "userId": src,
+                           "name": display_name(src, (src2user.get(src) or {}).get("name")),
+                           "avatar": (src2user.get(src) or {}).get("avatar"), "client": cl,
+                           "resolved": bool(src2user.get(src)), "locked": False})
+                continue
+            uid, nm = req.get("userId"), req.get("name")
+            if uid:
+                info = None
+                for _p, _st in list(conns.items()):       # resolve name+avatar via any live client
+                    try:
+                        info = resolve_user(_st["cdp"], uid)
+                    except Exception:
+                        info = None
+                    if info:
+                        break
+                info = info or {"userId": uid, "name": "user " + uid[-4:], "avatar": None}
+                manual_assign[src] = {"userId": uid}; src2user[src] = info
+            elif nm:                                       # free-text label (no real user)
+                info = {"userId": "manual:" + src, "name": nm, "avatar": None}
+                manual_assign[src] = {"name": nm}; src2user[src] = info
+            else:
+                continue
+            print("[assign] %s -> %s (locked)" % (src[-6:], info["name"]))
+            broadcast({"type": "rename", "userId": src, "name": display_name(src, info["name"]),
+                       "avatar": info.get("avatar"), "client": cl, "resolved": True, "locked": True})
         # Correlate INDEPENDENTLY per client: a stream from client X can only ever bind
         # to a speaker reported by client X's own CDP. No cross-client leakage.
         for port, st0 in list(conns.items()):
@@ -668,6 +713,23 @@ def mapping_thread():
                     st0["vs_none"] = 0
                     diff_voice(client, c, st0["vs_prev"], cur_vs)
                     st0["vs_prev"] = cur_vs
+
+            # roster: the call's members (name + avatar) so the UI's reassign picker can list real
+            # people instead of asking for user IDs. Fetched regardless of the voice-events setting.
+            if client and now - st0.get("roster_t", 0) > 2.0:
+                st0["roster_t"] = now
+                try:
+                    rvs = voice_states(c)
+                except Exception:
+                    rvs = None
+                if rvs:
+                    members = []
+                    for uid, vst in rvs.items():
+                        info = resolve_user(c, uid)
+                        if info:
+                            members.append({"userId": uid, "name": info["name"],
+                                            "avatar": info.get("avatar"), "stream": bool(vst.get("stream"))})
+                    broadcast({"type": "roster", "client": client, "members": members})
 
             # --- native per-stream binding via ssrc (the reliable path) ---
             # Pull this client's ssrc->user table ~1x/sec and feed the audio ssrcs back to the
@@ -869,7 +931,8 @@ def main():
         last_emit[src] = now
         broadcast({"type": "transcript", "userId": src, "name": name, "avatar": avatar,
                    "text": text, "isFinal": final, "client": src_client.get(src),
-                   "kind": kind_of(src), "ts": int(time.time() * 1000)})
+                   "kind": kind_of(src), "ts": int(time.time() * 1000),
+                   "resolved": bool(u), "locked": src in manual_assign})
 
     def keepalive(src):
         # tell the overlay this speaker is still active even when a chunk transcribed to nothing,
