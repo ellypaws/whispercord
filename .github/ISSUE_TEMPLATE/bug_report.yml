@@ -18,7 +18,6 @@ body:
     attributes:
       label: Where did it happen?
       options:
-        - Native UI (WinUI app)
         - Transcription engine / backend
         - Overlay
         - Discord capture
