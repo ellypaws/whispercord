@@ -301,6 +301,40 @@ def start_tray(window):
 
 
 # ----------------------------------------------------------------------------- gui mode
+def start_dev_reload(window):
+    """Dev-only hot reload: when a UI file changes, reload the webview (set VT_DEV=1).
+    Vanilla full-reload — no toolchain — the js_api bridge and `pywebviewready` re-fire on reload."""
+    import time
+    if os.environ.get("VT_DEV") != "1" or getattr(sys, "frozen", False):
+        return
+    watched = [paths.resource("ui", "index.html"), paths.resource("ui", "app.js"),
+               paths.resource("ui", "styles.css")]  # styles.css optional; missing files are ignored
+
+    def snapshot():
+        snap = {}
+        for p in watched:
+            try:
+                snap[p] = os.path.getmtime(p)
+            except OSError:
+                snap[p] = 0
+        return snap
+
+    def loop():
+        last = snapshot()
+        while True:
+            time.sleep(0.4)
+            cur = snapshot()
+            if cur != last:
+                last = cur
+                try:
+                    window.evaluate_js("window.location.reload()")
+                    print("[dev] UI changed -> reloaded")
+                except Exception as e:
+                    print("[dev] reload failed: %s" % e)
+    threading.Thread(target=loop, daemon=True).start()
+    print("[dev] hot reload watching ui/ (VT_DEV=1)")
+
+
 def run_gui():
     import webview
     api = Api()
@@ -316,6 +350,7 @@ def run_gui():
 
     def setup():
         start_tray(window)
+        start_dev_reload(window)
     try:
         webview.start(setup, icon=icon_path())   # icon arg supported on newer pywebview
     except TypeError:
