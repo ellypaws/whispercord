@@ -79,7 +79,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        gfx: [gfx110X, gfx120X, gfx1151, gfx1150]
+        gfx: [gfx110X]   # debug: one arch first; expand to gfx120X/gfx1151/gfx1150 once green
     steps:
       - uses: actions/checkout@v4
         with:
