@@ -743,6 +743,7 @@ function fillForm(c) {
   $("o_max").value = o.max_blocks ?? 6;
   $("o_fade").value = o.fade_start_count ?? 5;
   $("o_minop").value = o.min_fade_opacity ?? 0.25;
+  $("o_shrink").checked = o.shrink_quiet_subtitles === true;
   $("o_logh").value = o.log_height ?? 300;
   $("ui_events").checked = c.voice_events !== false;
   const u = c.ui || {};
@@ -795,6 +796,7 @@ function readForm() {
       max_blocks: parseInt($("o_max").value, 10),
       fade_start_count: parseInt($("o_fade").value, 10),
       min_fade_opacity: parseFloat($("o_minop").value),
+      shrink_quiet_subtitles: $("o_shrink").checked,
       log_height: parseInt($("o_logh").value, 10) || 300,
     }),
     ui: Object.assign({}, CFG.ui, {
@@ -886,7 +888,7 @@ const LIVE_FIELDS = new Set([
   "adv_lang", "adv_beam",                                  // language + beam size
 ]);
 // overlay-only settings: applied by re-injecting the overlay into Discord, NOT by an engine restart
-const OVERLAY_FIELDS = new Set(["o_timeout", "o_max", "o_fade", "o_minop", "o_logh", "a_sound"]);
+const OVERLAY_FIELDS = new Set(["o_timeout", "o_max", "o_fade", "o_minop", "o_shrink", "o_logh", "a_sound"]);
 function markRestartNeeded() { if (engineRunning) $("restartbar").style.display = "flex"; }
 function clearRestartNeeded() { $("restartbar").style.display = "none"; }
 function markOverlayNeeded() { if (engineRunning) $("overlaybar").style.display = "flex"; }
@@ -1693,6 +1695,7 @@ const HELP = {
   ui_newtop: "**Newest on top.** Off = newest lines at the bottom (classic chat). On = newest pops in at the top.",
   ui_ts: "Show a **timestamp** on each transcript line.",
   ui_tsfmt: "Timestamp style: **clock** (`14:03:22`) or **relative** (`12s ago`).",
+  o_shrink: "**Shrink quiet subtitles.** Older subtitle blocks shrink after one second without new words; the current bottom subtitle stays full size.",
   o_logh: "Height of the in-Discord transcript log panel, in pixels (also drag-resizable).",
   o_timeout: "How long a subtitle stays on screen **after speech stops**, in milliseconds.",
   o_max: "Maximum number of subtitle blocks shown on the overlay at once.",

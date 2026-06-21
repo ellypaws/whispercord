@@ -30,6 +30,7 @@ DEFAULTS = {
         "max_blocks": 6,
         "fade_start_count": 5,
         "min_fade_opacity": 0.25,
+        "shrink_quiet_subtitles": False,
         "log_height": 300,              # in-Discord transcript log height (px, drag-resizable)
         "log_autoscroll": True,
     },

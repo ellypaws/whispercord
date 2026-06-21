@@ -75,7 +75,7 @@ CAP_SCREEN = CAP.get("screenshare", True)
 SCREEN_LABEL = CAP.get("screenshare_label", " (stream)")
 SCREEN_DETECT_S = CAP.get("screenshare_detect_s", 18.0)
 MAX_STALE_S = CAP.get("max_stale_s", 3.0)   # finalize a mic utterance whose transcript stops changing
-KEEPALIVE_S = 2.0                   # ping the overlay this often while a stream is still active
+KEEPALIVE_S = 0.75                  # keep the overlay's 1s quiet-shrink delay from firing mid-sentence
 # --- name binding: accumulate evidence so the identity with the most hits wins (anti-blip) ---
 NAME_VOTE_CAP = 12.0                # ceiling on accumulated confidence per identity
 NAME_SWITCH_MARGIN = 4.0            # a challenger must lead the bound name by this many votes to win

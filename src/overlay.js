@@ -1,5 +1,5 @@
 // BetterDiscord-free overlay injected into Discord's renderer via CDP.
-// Subtitles (count-based fade + live cursor + keyword alerts) + scrollable transcript log + status pills.
+// Subtitles (activity-based scale + live cursor + keyword alerts) + scrollable transcript log + status pills.
 // Settings come from window.__VT_CONFIG (set by the orchestrator before injection).
 (() => {
   if (window.top !== window.self) return "subframe";
@@ -13,6 +13,8 @@
   const MAX_BLOCKS = OV.max_blocks || 6;
   const FADE_START = OV.fade_start_count || 5;
   const MIN_FADE = OV.min_fade_opacity != null ? OV.min_fade_opacity : 0.25;
+  const SHRINK_QUIET = OV.shrink_quiet_subtitles === true;
+  const SHRINK_IDLE_MS = 1000;
   const LOG_H = OV.log_height || 300;
   const LOG_AUTOSCROLL = OV.log_autoscroll !== false;
   let KEYWORDS = (AL.keywords || []).map((k) => String(k).toLowerCase()).filter(Boolean);
@@ -169,25 +171,49 @@
   const container = document.createElement("div"); container.className = "vt-container";
   document.body.appendChild(container);
   const blocks = new Map(), order = [];
-  function updateFades() {
-    const n = order.length;
+  let layoutTimer = null;
+  function scheduleLayout(delay) {
+    if (layoutTimer) clearTimeout(layoutTimer);
+    layoutTimer = setTimeout(() => { layoutTimer = null; updateLayout(); }, Math.max(0, delay));
+  }
+  function moveToBottom(uid, b) {
+    const i = order.indexOf(uid);
+    if (i >= 0 && i === order.length - 1) return;
+    if (i >= 0) order.splice(i, 1);
+    order.push(uid);
+    if (b && b.el && b.el.parentNode === container) container.appendChild(b.el);
+  }
+  function touchBlock(uid, b) {
+    b.lastActive = Date.now();
+    moveToBottom(uid, b);
+  }
+  function updateLayout() {
+    if (layoutTimer) { clearTimeout(layoutTimer); layoutTimer = null; }
+    const n = order.length, now = Date.now();
+    let nextLayout = null;
     for (let idx = 0; idx < n; idx++) {
       const b = blocks.get(order[idx]); if (!b) continue;
       const fromBottom = n - 1 - idx;
+      const quietFor = now - (b.lastActive || 0);
+      const isQuiet = fromBottom > 0 && quietFor >= SHRINK_IDLE_MS;
+      if (fromBottom > 0 && !isQuiet) {
+        const due = SHRINK_IDLE_MS - quietFor + 20;
+        nextLayout = nextLayout == null ? due : Math.min(nextLayout, due);
+      }
       let op = 1;
-      if (n >= FADE_START && fromBottom >= FADE_START - 1) op = Math.max(MIN_FADE, 1 - (fromBottom - FADE_START + 2) * 0.28);
+      if (isQuiet && n >= FADE_START && fromBottom >= FADE_START - 1) op = Math.max(MIN_FADE, 1 - (fromBottom - FADE_START + 2) * 0.28);
       b.el.style.opacity = String(op);
-      // older (top) entries also shrink in step with the fade, so the stack recedes
-      const scale = Math.max(0.62, 1 - (1 - op) * 0.4);
+      const scale = SHRINK_QUIET && isQuiet ? Math.max(0.62, 1 - fromBottom * 0.12) : 1;
       b.el.style.transform = scale < 0.999 ? "scale(" + scale.toFixed(3) + ")" : "";
     }
+    if (nextLayout != null) scheduleLayout(nextLayout);
   }
   function removeBlk(uid) {
     const b = blocks.get(uid); if (!b) return;
     if (b.timeout) clearTimeout(b.timeout);
     b.el.style.opacity = "0"; setTimeout(() => b.el.remove(), 300);
     blocks.delete(uid); const i = order.indexOf(uid); if (i >= 0) order.splice(i, 1);
-    updateFades();
+    updateLayout();
   }
   function sub(uid, name, avatar, text, isFinal) {
     let b = blocks.get(uid);
@@ -202,8 +228,9 @@
       const body = document.createElement("span");
       const cur = document.createElement("span"); cur.className = "vt-cursor"; cur.textContent = "▍";
       t.append(nm, body, cur); el.append(img, t); container.appendChild(el);
-      b = { el, body, cur, nm, img, timeout: null, finalized: false, alerted: false }; blocks.set(uid, b); order.push(uid);
+      b = { el, body, cur, nm, img, timeout: null, finalized: false, alerted: false, lastActive: 0 }; blocks.set(uid, b); order.push(uid);
     }
+    touchBlock(uid, b);
     if (name) b.nm.textContent = name;
     if (avatar && b.img && !b.img.src) b.img.src = avatar;
     b.text = text || "";
@@ -213,7 +240,7 @@
     b.finalized = !!isFinal; b.cur.style.display = b.finalized ? "none" : "inline-block";
     if (b.timeout) clearTimeout(b.timeout);
     b.timeout = setTimeout(() => removeBlk(uid), LIVE_MS);
-    updateFades();
+    updateLayout();
   }
 
   // ---- transcript log ----
@@ -390,7 +417,12 @@
     if (m.type === "keepalive") {
       // the speaker is still talking even if this chunk had no words; keep the subtitle alive
       const b = blocks.get(m.userId);
-      if (b) { if (b.timeout) clearTimeout(b.timeout); b.timeout = setTimeout(() => removeBlk(m.userId), LIVE_MS); }
+      if (b) {
+        touchBlock(m.userId, b);
+        if (b.timeout) clearTimeout(b.timeout);
+        b.timeout = setTimeout(() => removeBlk(m.userId), LIVE_MS);
+        updateLayout();
+      }
       return;
     }
     if (m.type === "rename") {
