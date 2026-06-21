@@ -34,9 +34,9 @@ _AMD_GFX = [
 # RDNA3/3.5/4; older AMD (RDNA2) routes to vulkan, which is the broad fallback.
 HIP_GFX_SUPPORTED = {"gfx1100", "gfx1101", "gfx1102", "gfx1150", "gfx1151", "gfx1200", "gfx1201"}
 
-# HIP runtimes (large, per-arch) aren't published yet — route all AMD through Vulkan (universal) for
-# now. Flip on once the whispercpp-hip-* assets ship to enable HIP for supported Radeon.
-HIP_ENABLED = False
+# auto prefers HIP for supported Radeon (RDNA3/3.5/4); the engine's hip->vulkan->cpu fallback
+# covers any arch whose HIP artifact isn't published yet or that fails to load.
+HIP_ENABLED = True
 
 _NO_WINDOW = 0x08000000
 

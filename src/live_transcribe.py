@@ -906,18 +906,25 @@ def main():
             print("[cuda] setup failed (%s) - GPU may not load" % e)
     backend = None
     if DEVICE in ("hip", "vulkan"):
-        # whisper.cpp (GGML) handles AMD/Intel GPUs. Download the lib+model on first use; any
-        # failure (artifact missing, load error) degrades to the CTranslate2 CPU path below.
-        gfx = gpu_detect.amd_gpu()[0] if DEVICE == "hip" else None
-        try:
-            emit_progress("model", "Preparing %s speech runtime…" % DEVICE)
-            backend = backends.load_whispercpp(
-                DEVICE, gfx, MODEL, beam_size=BEAM, language=LANGUAGE, no_speech_threshold=NO_SPEECH,
-                log=print, on_progress=lambda pct, label: emit_progress("model", label, pct))
-            print("[whisper] ready (backend=whisper.cpp/%s, gfx=%s)" % (DEVICE, gfx))
-        except Exception as e:
-            print("[whisper] %s backend unavailable (%s) - falling back to CPU" % (DEVICE, e))
-            emit_progress("model", "%s GPU unavailable - using CPU" % DEVICE)
+        # whisper.cpp (GGML) handles AMD/Intel GPUs, downloaded on first use. Cascade hip -> vulkan
+        # -> cpu so a missing HIP artifact or load failure lands on working Vulkan, not straight CPU.
+        gfx = gpu_detect.amd_gpu()[0]
+        chain = ["hip", "vulkan"] if DEVICE == "hip" else ["vulkan"]
+        for be in chain:
+            try:
+                emit_progress("model", "Preparing %s speech runtime…" % be)
+                backend = backends.load_whispercpp(
+                    be, gfx if be == "hip" else None, MODEL,
+                    beam_size=BEAM, language=LANGUAGE, no_speech_threshold=NO_SPEECH,
+                    log=print, on_progress=lambda pct, label: emit_progress("model", label, pct))
+                DEVICE = be
+                print("[whisper] ready (backend=whisper.cpp/%s, gfx=%s)" % (be, gfx if be == "hip" else "-"))
+                break
+            except Exception as e:
+                print("[whisper] %s backend unavailable (%s)" % (be, e))
+        if backend is None:
+            print("[whisper] GPU backends unavailable - falling back to CPU")
+            emit_progress("model", "GPU unavailable - using CPU")
             DEVICE, COMPUTE = "cpu", "int8"
 
     if backend is None:
