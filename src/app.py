@@ -194,16 +194,10 @@ class Api:
             if info["vendor"] == "cpu" and gpu_detect.nvidia_present():
                 info = {"vendor": "nvidia", "name": "NVIDIA GPU", "gfx": None, "vulkan": True}
             vendor = info["vendor"]
-            if vendor == "nvidia":
-                rec_engine, rec_device = "whisper", "cuda"
-            elif vendor == "amd":
-                rec_engine = "whisper"
-                rec_device = "hip" if gpu_detect.HIP_ENABLED and info.get("gfx") in gpu_detect.HIP_GFX_SUPPORTED else (
-                    "vulkan" if info.get("vulkan") else "cpu")
-            elif vendor == "intel":
-                rec_engine, rec_device = "whisper", "vulkan" if info.get("vulkan") else "cpu"
-            else:
-                rec_engine, rec_device = "parakeet", "cpu"
+            # Device follows gpu_detect.resolve("auto") verbatim so the wizard never diverges from
+            # what the engine actually picks (auto now prefers vulkan over cuda, incl. on NVIDIA).
+            rec_device = gpu_detect.resolve("auto", log=lambda *a: None)
+            rec_engine = "whisper" if vendor in ("nvidia", "amd", "intel") else "parakeet"
             info.update({"recommended_engine": rec_engine, "recommended_device": rec_device})
             return info
         except Exception as e:

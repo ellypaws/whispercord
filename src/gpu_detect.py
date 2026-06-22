@@ -132,8 +132,11 @@ def _wcpp_or_cpu(backend, log):
 def resolve(requested, log=print):
     """Map a configured device to a concrete backend: cuda | hip | vulkan | cpu.
 
-    auto -> NVIDIA? cuda : supported-AMD? hip : Vulkan-GPU? vulkan : cpu.
-    Explicit cuda with no NVIDIA GPU falls back to cpu (CUDA is NVIDIA-only)."""
+    auto -> supported-AMD? hip : Vulkan-GPU? vulkan : NVIDIA? cuda : cpu.
+    Vulkan is preferred over CUDA even on NVIDIA: the whisper.cpp Vulkan path benchmarked
+    faster than CTranslate2/CUDA here (small and large-v3) at equal accuracy, and it skips the
+    ~1.5 GB cuBLAS/cuDNN download. CUDA stays the fallback when Vulkan or the whisper.cpp backend
+    isn't usable on an NVIDIA box. Explicit cuda with no NVIDIA GPU falls back to cpu."""
     req = (requested or "auto").strip().lower()
 
     if req == "cpu":
@@ -151,16 +154,25 @@ def resolve(requested, log=print):
         log("[gpu] hip runtime not published yet - using vulkan")
         return _wcpp_or_cpu("vulkan", log)
 
-    # auto
-    if nvidia_present():
-        return "cuda"
+    # auto: supported Radeon prefers HIP; otherwise prefer Vulkan (whisper.cpp) for ANY Vulkan
+    # GPU, NVIDIA included, since it benchmarked faster than CUDA. CUDA is the NVIDIA fallback.
     gfx, name = amd_gpu()
     if HIP_ENABLED and gfx in HIP_GFX_SUPPORTED:
         log("[gpu] auto: AMD %s (%s) -> hip" % (name, gfx))
         return _wcpp_or_cpu("hip", log)
     if has_vulkan_gpu():
-        log("[gpu] auto: Vulkan-capable GPU -> vulkan")
-        return _wcpp_or_cpu("vulkan", log)
+        vk = _wcpp_or_cpu("vulkan", log)
+        if vk == "vulkan":
+            log("[gpu] auto: Vulkan-capable GPU -> vulkan")
+            return "vulkan"
+        # whisper.cpp backend unavailable: keep CUDA on NVIDIA rather than dropping to cpu.
+        if nvidia_present():
+            log("[gpu] auto: vulkan backend unavailable - using cuda")
+            return "cuda"
+        return vk
+    if nvidia_present():
+        log("[gpu] auto: no Vulkan loader - using cuda")
+        return "cuda"
     log("[gpu] auto: no usable GPU detected - using cpu")
     return "cpu"
 

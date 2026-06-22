@@ -2209,7 +2209,10 @@ async function boot() {
 // AMD/Intel (hip/vulkan) use the GGML build of the same model.
 function activeModelMatcher() {
   const engine = ($("asr_engine") && $("asr_engine").value) || (CFG && CFG.asr_engine) || "whisper";
-  const dev = ($("adv_device") && $("adv_device").value) || (CFG && CFG.device) || "auto";
+  const cfgDev = ($("adv_device") && $("adv_device").value) || (CFG && CFG.device) || "auto";
+  // "auto" resolves at runtime; mirror gpu_detect via the detected device so the active-model
+  // badge matches what actually loads (auto now prefers vulkan -> GGML, even on NVIDIA).
+  const dev = cfgDev === "auto" ? ((cachedHw && cachedHw.recommended_device) || cfgDev) : cfgDev;
   const wname = ($("whisper_model").value || (CFG && CFG.whisper_model) || "").toLowerCase();
   const pname = (($("parakeet_model") && $("parakeet_model").value) || (CFG && CFG.parakeet_model) || "").toLowerCase();
   const ggmlDev = (dev === "hip" || dev === "vulkan");
@@ -2223,6 +2226,8 @@ function activeModelMatcher() {
 async function refreshModels() {
   let list = [];
   try { list = await API.list_models(); } catch (e) {}
+  // Need the resolved device to know which model "auto" will load; detect once and cache.
+  if (!cachedHw) { try { cachedHw = await API.detect_hardware(); } catch (e) {} }
   const box = $("models");
   if (!list.length) {
     box.innerHTML = '<div class="hint">No models downloaded yet. The selected model downloads on first Start.</div>';
