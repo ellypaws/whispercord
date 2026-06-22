@@ -241,6 +241,45 @@ window.__vtr = (() => {
     for (const k in el) { if (k[0] === "_" && (k.indexOf("__reactFiber$") === 0 || k.indexOf("__reactInternalInstance$") === 0)) return el[k]; }
     return null;
   };
+  const isChId = (v) => typeof v === "string" ? /^\d{15,21}$/.test(v) : (typeof v === "number" && v > 0);
+  // our own user id from the bottom-left account avatar (DOM-only, no webpack needed)
+  const getSelfId = () => {
+    try {
+      const re = /\/avatars\/(\d{15,21})\//;
+      const accImg = document.querySelector(
+        '[class*="accountProfile"] img[src*="/avatars/"], [class*="avatarWrapper"] img[src*="/avatars/"], section[class*="panel"] img[src*="/avatars/"]');
+      if (accImg) { const m = (accImg.src || "").match(re); if (m) return m[1]; }
+    } catch (e) {}
+    return null;
+  };
+  // The voice channel THIS client is actually CONNECTED to (not whatever channel is open on
+  // screen). Anchored off the visible Disconnect button in the connected-voice panel: walk its
+  // fibers for a channelId / channel object, then fall back to a /channels/<guild>/<id> link.
+  // Returns a string id, or null when not connected / not derivable.
+  const connChannelId = () => {
+    try {
+      const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+      const disc = Array.from(document.querySelectorAll('button[aria-label],[role="button"][aria-label]'))
+        .find((b) => vis(b) && /^disconnect$/i.test(b.getAttribute("aria-label") || ""));
+      if (!disc) return null;
+      let f = fiberOf(disc), hops = 0;
+      while (f && hops < 40) {
+        const p = f.memoizedProps;
+        if (p) {
+          if (isChId(p.channelId)) return String(p.channelId);
+          if (p.channel && isChId(p.channel.id)) return String(p.channel.id);
+        }
+        f = f.return; hops++;
+      }
+      let n = disc;
+      for (let i = 0; i < 10 && n; i++) {
+        n = n.parentElement; if (!n) break;
+        const a = n.querySelector('a[href*="/channels/"]');
+        if (a) { const m = (a.getAttribute("href") || "").match(/\/channels\/[^/]+\/(\d{15,21})/); if (m) return m[1]; }
+      }
+    } catch (e) {}
+    return null;
+  };
   let _r = null, _rt = 0;
   const roster = () => {
     const now = Date.now();
@@ -254,6 +293,7 @@ window.__vtr = (() => {
         const p = f.memoizedProps;
         if (p && p.voiceStates && typeof p.voiceStates === "object" && !Array.isArray(p.voiceStates)) {
           const guildId = (p.channel && p.channel.guild_id) || null;
+          const cid = (p.channel && p.channel.id != null) ? String(p.channel.id) : null;
           for (const uid in p.voiceStates) {
             const e = p.voiceStates[uid]; if (!e) continue;
             const u = e.user; if (!u || !u.id) continue;
@@ -261,6 +301,7 @@ window.__vtr = (() => {
             const nm = e.nick || (e.member && e.member.nick) || u.globalName || u.username;
             const o = out[u.id] || (out[u.id] = { uid: u.id });
             o.name = nm; o.username = u.username;
+            o.channelId = cid;                 // which voice channel this person is in
             o.avatar = avatarUrl(u, e.member, guildId);
             o.selfMute = !!vs.selfMute; o.selfDeaf = !!vs.selfDeaf;
             o.mute = !!(vs.mute || vs.selfMute); o.deaf = !!(vs.deaf || vs.selfDeaf);
@@ -276,16 +317,22 @@ window.__vtr = (() => {
     //     speaking trusts the ring. Keep the fiber value separately because self speaking can be
     //     exposed there before/without the same visible ring.
     document.querySelectorAll('[class*="voiceUser"]').forEach((t) => {
-      let f = fiberOf(t), hops = 0, u = null, nick = null, fsp = false;
-      while (f && hops < 6) {
+      let f = fiberOf(t), hops = 0, u = null, nick = null, fsp = false, chId = null;
+      // keep walking up past the user fiber so we can also read the enclosing channel id
+      while (f && hops < 20) {
         const p = f.memoizedProps;
-        if (p && p.user && p.user.id) { u = p.user; nick = p.nick; fsp = p.speaking === true; break; }
+        if (p) {
+          if (!u && p.user && p.user.id) { u = p.user; nick = p.nick; fsp = p.speaking === true; }
+          if (chId === null && p.channel && p.channel.id != null) chId = String(p.channel.id);
+        }
+        if (u && chId !== null) break;
         f = f.return; hops++;
       }
       if (!u) return;
       const o = out[u.id] || (out[u.id] = { uid: u.id });
       if (o.name === undefined) o.name = nick || u.nick || u.globalName || u.username;
       if (o.username === undefined) o.username = u.username;
+      if (o.channelId == null && chId !== null) o.channelId = chId;
       if (o.avatar === undefined) o.avatar = avatarUrl(u, null, null);
       let dom = false;
       try {
@@ -299,6 +346,18 @@ window.__vtr = (() => {
     _r = out; _rt = now;
     return out;
   };
+  // A predicate selecting only the people in MY voice channel, or null when I'm not in a channel
+  // that is on screen. You can only be in one voice channel, and your own id always appears in its
+  // roster, so the channel containing selfId IS my channel. Anything else (a channel I'm only
+  // previewing, or none) yields null -> callers report nobody, never the wrong channel.
+  const myChannelFilter = (r, selfId) => {
+    if (!selfId || !r[selfId]) return null;
+    const mine = r[selfId].channelId != null ? String(r[selfId].channelId) : "_";
+    return (uid) => {
+      const c = (r[uid] && r[uid].channelId != null) ? String(r[uid].channelId) : "_";
+      return c === mine;
+    };
+  };
   const avatarScrape = (uid) => {
     const imgs = document.querySelectorAll('img[src*="/avatars/' + uid + '/"]');
     for (const img of imgs) {
@@ -308,11 +367,7 @@ window.__vtr = (() => {
     return null;
   };
   const domSelf = () => {
-    let selfId = null;
-    const re = /\/avatars\/(\d{15,21})\//;
-    const accImg = document.querySelector(
-      '[class*="accountProfile"] img[src*="/avatars/"], [class*="avatarWrapper"] img[src*="/avatars/"], section[class*="panel"] img[src*="/avatars/"]');
-    if (accImg) { const m = (accImg.src || "").match(re); if (m) selfId = m[1]; }
+    const selfId = getSelfId();
     let muted = false, deaf = false, inCall = false;
     const vis = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
     const sw = Array.from(document.querySelectorAll('button[role="switch"][aria-label]')).filter(vis);
@@ -333,17 +388,24 @@ window.__vtr = (() => {
     });
     let speaking = false;
     let speakingReliable = false;
+    let channelId = null;
     if (selfId) {
       const r = roster();
       const me = r[selfId];
       if (me) {
         speaking = !!(me.domSpeaking || me.fiberSpeaking);
         speakingReliable = true;
+        if (me.channelId != null) channelId = String(me.channelId);
       }
     }
-    // reliable:false — scraped from the DOM, only valid when this client's call panel is on screen;
-    // the own-voice gate fails closed on an unreliable read so a muted/background client won't leak.
-    return { selfId: selfId, channelId: inCall ? 1 : null, inCall: inCall, muted: muted, deaf: deaf, speaking: speaking,
+    // Prefer the connected-voice panel's channel id; it is right even when the call is off screen.
+    if (!channelId) { const cc = connChannelId(); if (cc) channelId = cc; }
+    // inCall is authoritative (the visible Disconnect button). channelId is the real connected
+    // channel when we could read it, else 1 as a "in a call, id unknown" sentinel.
+    // reliable:false means values were scraped from the DOM; the own-voice gate fails closed on an
+    // unreliable read so a muted/background client won't leak.
+    return { selfId: selfId, channelId: inCall ? (channelId || 1) : (channelId || null),
+             inCall: inCall, muted: muted, deaf: deaf, speaking: speaking,
              reliable: false, muteReliable: !!muteSw, speakingReliable: speakingReliable };
   };
   // Reliable, webpack-free self NAMES from the bottom-left account panel (anchored off the User
@@ -375,13 +437,20 @@ window.__vtr = (() => {
     speaking: () => {
       const w = wpSpeaking();
       if (w !== null) return w;
-      const r = roster(); const me = domSelf().selfId;
-      return Object.keys(r).filter((uid) => r[uid].speaking && uid !== me);
+      const r = roster(); const me = getSelfId();
+      const inMine = myChannelFilter(r, me);
+      if (!inMine) return [];                       // not in any on-screen channel -> nobody
+      return Object.keys(r).filter((uid) => uid !== me && r[uid].speaking && inMine(uid));
     },
     voiceStates: () => {
       const w = wpVoiceStates();
       if (w !== null) return w;
-      const r = roster(); const uids = Object.keys(r);
+      const r = roster(); const me = getSelfId();
+      const inMine = myChannelFilter(r, me);
+      // null (not in a visible channel) is treated by the engine as a transient off-screen read,
+      // so it won't wipe the roster baseline or fire bogus leave events.
+      if (!inMine) return null;
+      const uids = Object.keys(r).filter(inMine);
       if (!uids.length) return null;
       const o = {};
       for (const uid of uids) {
