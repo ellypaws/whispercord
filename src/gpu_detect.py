@@ -168,7 +168,7 @@ def resolve(requested, log=print):
 def resolve_parakeet(requested, log=print):
     """Map a Parakeet device request to cuda | cpu.
 
-    sherpa-onnx Parakeet phase 1 supports NVIDIA CUDA and CPU only. hip/vulkan are
+    sherpa-onnx Parakeet supports NVIDIA CUDA and CPU only. hip/vulkan are
     whisper.cpp devices and never apply to this backend.
     """
     req = (requested or "auto").strip().lower()

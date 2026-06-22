@@ -134,7 +134,9 @@
   .tcol-h .cdot { width:8px; height:8px; border-radius:50%; background:var(--accent); }
   .tcol-h .cnt { margin-left:auto; color:var(--mut); font-weight:400; font-size:11px; }
   /* per-column roster faces (green ring = speaking; replaces the old "N speaking" text) */
-  .tcol-h .tcol-roster { flex:1; min-width:0; display:flex; align-items:center; gap:4px; overflow-x:clip; overflow-y:visible; }
+  .tcol-h .tcol-roster { flex:1; min-width:0; display:flex; align-items:center; gap:4px; overflow-x:clip; overflow-y:visible;
+                         /* let the first face's green speaking ring show instead of clipping its left edge */
+                         overflow-clip-margin:9px; padding-left:2px; }
   .tcol-roster.bottom { flex:0 0 auto; display:flex; align-items:center; gap:4px; overflow:hidden;
                         padding:6px 10px; border-top:1px solid var(--line); background:#2b2d31; }
   .rface { position:relative; width:22px; height:22px; flex:0 0 22px; border-radius:50%; }
@@ -288,6 +290,7 @@
   .modelrow { display:flex; align-items:center; gap:10px; padding:7px 0; border-top:1px solid var(--line); }
   .modelrow:first-child { border-top:0; }
   .modelrow .nm { font-weight:600; }
+  .modelrow .modeng { font-size:11px; color:var(--mut); }
   .modelrow .badge { font-size:10px; color:#fff; background:var(--good); border-radius:999px; padding:1px 7px; }
   .modelrow .sz { margin-left:auto; color:var(--mut); font-variant-numeric:tabular-nums; }
   .modelrow .trash { cursor:pointer; color:var(--mut); display:inline-flex; padding:5px; border-radius:5px; }

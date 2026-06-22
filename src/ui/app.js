@@ -1331,7 +1331,8 @@ function initAutosave() {
     if (e.target.id === "kw-input") return;
     if (e.target.id === "asr_engine") applyEngineConstraints(e.target.value);
     if (e.target.id === "adv_device") refreshGpu();
-    if (e.target.id === "whisper_model") refreshModels();
+    // any of these change which downloaded model is "active"
+    if (["whisper_model", "asr_engine", "parakeet_model", "adv_device"].includes(e.target.id)) refreshModels();
     if (e.target.id === "ui_ts" || e.target.id === "ui_tsfmt") renderAllPanels();
     scheduleSave();
     if (LIVE_FIELDS.has(e.target.id)) return;                 // applies live, no prompt
@@ -2145,21 +2146,39 @@ async function boot() {
 }
 
 // ---------- downloaded models ----------
+// Which downloaded model is the one the current config will actually load. Depends on the
+// engine, the chosen model name, and (for Whisper) the device family: cuda/cpu use CTranslate2,
+// AMD/Intel (hip/vulkan) use the GGML build of the same model.
+function activeModelMatcher() {
+  const engine = ($("asr_engine") && $("asr_engine").value) || (CFG && CFG.asr_engine) || "whisper";
+  const dev = ($("adv_device") && $("adv_device").value) || (CFG && CFG.device) || "auto";
+  const wname = ($("whisper_model").value || (CFG && CFG.whisper_model) || "").toLowerCase();
+  const pname = (($("parakeet_model") && $("parakeet_model").value) || (CFG && CFG.parakeet_model) || "").toLowerCase();
+  const ggmlDev = (dev === "hip" || dev === "vulkan");
+  return (m) => {
+    if (engine === "parakeet") return m.kind === "parakeet" && m.name.toLowerCase() === pname;
+    if (m.kind === "ct2") return !ggmlDev && m.name.toLowerCase() === wname;
+    if (m.kind === "ggml") return ggmlDev && m.name.toLowerCase() === wname;
+    return false;
+  };
+}
 async function refreshModels() {
   let list = [];
   try { list = await API.list_models(); } catch (e) {}
   const box = $("models");
-  const current = ($("whisper_model").value || "").toLowerCase();
   if (!list.length) {
-    box.innerHTML = '<div class="hint">No models downloaded yet - the selected model downloads on first Start.</div>';
+    box.innerHTML = '<div class="hint">No models downloaded yet. The selected model downloads on first Start.</div>';
     return;
   }
+  const isActive = activeModelMatcher();
   box.innerHTML = "";
   for (const m of list) {
     const row = document.createElement("div"); row.className = "modelrow";
     const nm = document.createElement("span"); nm.className = "nm"; nm.textContent = m.name;
     row.appendChild(nm);
-    if (m.name.toLowerCase() === current) {
+    const eng = document.createElement("span"); eng.className = "modeng"; eng.textContent = m.engine || ""; row.appendChild(eng);
+    const active = isActive(m);
+    if (active) {
       const badge = document.createElement("span"); badge.className = "badge"; badge.textContent = "active"; row.appendChild(badge);
     }
     const sz = document.createElement("span"); sz.className = "sz"; sz.textContent = (m.size_mb >= 1024 ? (m.size_mb / 1024).toFixed(1) + " GB" : m.size_mb + " MB");
@@ -2167,9 +2186,9 @@ async function refreshModels() {
     const tr = document.createElement("span"); tr.className = "trash"; tr.innerHTML = icon("trash-2");
     tr.title = "Delete " + m.name;
     tr.onclick = async () => {
-      if (m.name.toLowerCase() === current && engineRunning) { toast("Stop the engine before deleting the active model", false); return; }
+      if (active && engineRunning) { toast("Stop the engine before deleting the active model", false); return; }
       tr.style.pointerEvents = "none";
-      try { await API.delete_model(m.name); toast("Deleted " + m.name, false); } catch (e) { toast("Delete failed", false); }
+      try { await API.delete_model(m.id || m.name); toast("Deleted " + m.name, false); } catch (e) { toast("Delete failed", false); }
       refreshModels();
     };
     row.appendChild(tr);
@@ -2181,7 +2200,7 @@ async function refreshModels() {
 const HELP = {
   asr_engine: "**ASR engine.** Whisper is the broad default with 99 languages, sound events, and all device paths. Parakeet is faster for 25 European languages, auto language only, and uses NVIDIA or CPU.",
   whisper_model: "**Speech model.** Bigger = more accurate, slower, more VRAM.\n- `tiny`/`base` - fastest, rough\n- `small` - good balance (default)\n- `medium`/`large-v3` - best accuracy (needs a strong GPU)\n\nModels download once and are reused - switching back never re-downloads.",
-  parakeet_model: "**Parakeet model.** Phase 1 ships the int8 v3 model: 25 European languages, auto-detect, downloaded on first Start.",
+  parakeet_model: "**Parakeet model.** The int8 v3 model: 25 European languages, auto-detected, downloaded on first Start.",
   adv_lang: "**Language.** `Auto-detect` lets Whisper guess per utterance. Pin a language to stop it switching mid-call and to speed things up slightly. Parakeet always uses auto language mode.",
   cap_screen: "**Transcribe stream audio.** Include Go Live / screenshare audio (game, music, video) in transcription. Off = only people's microphones. Applies live, no restart.",
   transcribe_sounds: "**Transcribe sound events.** Keep emitted non-speech captions like `[laughs]`, `(applause)`, or `♪ music ♪`. Off strips those markers and treats sound-only output like silence. Applies live.",
