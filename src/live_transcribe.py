@@ -57,7 +57,9 @@ import backends                      # transcription backend seam (CTranslate2 t
 from config import load as _load_config
 from locate import locate_rva       # runtime RVA auto-locator (survives Discord updates)
 CFG = _load_config()
+ASR_ENGINE = (CFG.get("asr_engine") or "whisper").strip().lower()
 MODEL = CFG["whisper_model"]
+PARAKEET_MODEL = CFG.get("parakeet_model", "parakeet-tdt-0.6b-v3-int8")
 LANGUAGE = (CFG.get("language") or "").strip() or None
 BEAM = int(CFG.get("beam_size", 1))
 DEVICE = CFG.get("device", "cuda")
@@ -1083,15 +1085,42 @@ def mapping_thread():
 
 # ---------------- transcription ----------------
 def main():
-    global DEVICE, COMPUTE
+    global ASR_ENGINE, DEVICE, COMPUTE
     load_user_cache()
-    # Resolve the configured device against real hardware: auto|cuda|hip|vulkan|cpu -> a concrete
-    # backend. CUDA is NVIDIA-only, so device=cuda (or auto) on a non-NVIDIA box becomes cpu;
-    # hip/vulkan degrade to cpu until the whisper.cpp backend ships.
-    DEVICE = gpu_detect.resolve(DEVICE, print)
-    if DEVICE != "cuda" and COMPUTE in ("float16", "int8_float16"):   # GPU-only -> CPU-safe default
-        COMPUTE = "int8"
-    if DEVICE == "cuda":
+    backend = None
+    configured_device = DEVICE
+
+    if ASR_ENGINE == "parakeet":
+        # Parakeet is offline-only and auto-detects its 25 European languages. language,
+        # beam_size, compute_type, and transcribe_sounds do not affect this backend.
+        pdev = gpu_detect.resolve_parakeet(configured_device, print)
+        tries = [pdev] + (["cpu"] if pdev == "cuda" else [])
+        for dev in tries:
+            try:
+                emit_progress("model", "Preparing Parakeet speech runtime")
+                backend = backends.load_sherpa_onnx(
+                    PARAKEET_MODEL, dev,
+                    log=print, on_progress=lambda pct, label: emit_progress("model", label, pct))
+                DEVICE, COMPUTE = dev, "int8"
+                print("[parakeet] ready (model=%s, backend=sherpa/%s, lang=auto-25-eu)"
+                      % (PARAKEET_MODEL, dev))
+                break
+            except Exception as e:
+                print("[parakeet] %s backend unavailable (%s)" % (dev, e))
+        if backend is None:
+            print("[parakeet] unavailable - falling back to Whisper")
+            emit_progress("model", "Parakeet unavailable - using Whisper")
+            ASR_ENGINE = "whisper"
+            DEVICE = configured_device
+
+    if backend is None:
+        # Resolve the configured device against real hardware: auto|cuda|hip|vulkan|cpu -> a concrete
+        # backend. CUDA is NVIDIA-only, so device=cuda (or auto) on a non-NVIDIA box becomes cpu.
+        DEVICE = gpu_detect.resolve(DEVICE, print)
+        if DEVICE != "cuda" and COMPUTE in ("float16", "int8_float16"):   # GPU-only -> CPU-safe default
+            COMPUTE = "int8"
+
+    if backend is None and DEVICE == "cuda":
         try:
             from cuda_setup import ensure_cuda, cuda_present
             if not cuda_present():
@@ -1101,8 +1130,7 @@ def main():
             add_cuda_dlls()
         except Exception as e:
             print("[cuda] setup failed (%s) - GPU may not load" % e)
-    backend = None
-    if DEVICE in ("hip", "vulkan"):
+    if backend is None and DEVICE in ("hip", "vulkan"):
         # whisper.cpp (GGML) handles AMD/Intel GPUs, downloaded on first use. Cascade hip -> vulkan
         # -> cpu so a missing HIP artifact or load failure lands on working Vulkan, not straight CPU.
         gfx = gpu_detect.amd_gpu()[0]

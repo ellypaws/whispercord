@@ -53,6 +53,7 @@
   input[type=text],input[type=number],select { background:var(--panel2); border:1px solid var(--line);
            color:var(--txt); border-radius:5px; padding:6px 8px; font:inherit; flex:1; min-width:0; }
   .row > input[type=text], .row > input[type=number], .row > select, .row > .pillbox { grid-column:2 / -1; width:100%; }
+  .row > button { grid-column:2; justify-self:start; }
   .row > input[type=color] { grid-column:2; justify-self:start; }
   input[type=range] { width:100%; min-width:0; }
   .hint { color:var(--mut); font-size:11px; margin-left:170px; margin-top:-4px; }
@@ -258,6 +259,27 @@
   .modal p { margin:0 0 14px; color:var(--mut); font-size:12px; line-height:1.45; }
   .modal .kwchips { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:16px; min-height:24px; }
   .modal .actions { display:flex; justify-content:flex-end; gap:8px; }
+  .modal.wizard { width:560px; }
+  .wiz-steps { display:flex; gap:5px; margin:8px 0 14px; }
+  .wiz-dot { height:5px; flex:1; border-radius:999px; background:var(--line); }
+  .wiz-dot.active { background:var(--accent); }
+  .wiz-panel { display:flex; flex-direction:column; gap:10px; }
+  .wiz-panel .row { grid-template-columns:150px minmax(0,1fr); }
+  .engine-cards { display:flex; gap:10px; }
+  .engine-card { flex:1; border:1px solid var(--line); border-radius:8px; padding:11px 12px; cursor:pointer;
+           background:var(--panel2); transition:border-color .15s, box-shadow .15s; }
+  .engine-card:hover { border-color:var(--accent); }
+  .engine-card.sel { border-color:var(--accent); box-shadow:inset 0 0 0 1px var(--accent); }
+  .engine-card .ec-head { display:flex; align-items:center; gap:7px; margin-bottom:7px; }
+  .engine-card .ec-tag { font-size:10px; background:var(--accent); color:#fff; border-radius:999px; padding:1px 7px; }
+  .engine-card ul.ec-points { margin:0; padding-left:16px; color:var(--mut); font-size:11px; line-height:1.5; }
+  .engine-card .ec-dev { margin-top:8px; font-size:11px; color:var(--txt); }
+  .clientrow .st.ok { color:var(--good); display:inline-flex; align-items:center; gap:4px; }
+  .clientrow .st.ok .lu { width:13px; height:13px; }
+  .wiz-spin { display:inline-block; width:13px; height:13px; margin-right:6px; vertical-align:-2px;
+           border:2px solid var(--line); border-top-color:var(--accent); border-radius:50%;
+           animation:wizspin .7s linear infinite; }
+  @keyframes wizspin { to { transform:rotate(360deg); } }
   /* downloaded models list */
   .modelrow { display:flex; align-items:center; gap:10px; padding:7px 0; border-top:1px solid var(--line); }
   .modelrow:first-child { border-top:0; }
@@ -378,6 +400,7 @@
       <h2>Discord clients</h2>
       <div id="clients"><div class="empty">loading…</div></div>
       <div class="hint" style="margin:8px 0 0">Clients running without a debug port can be restarted to enable name resolution (this closes the current call).</div>
+      <div class="row"><label>Setup</label><button id="setup_wizard" class="sec">Setup wizard</button></div>
     </div>
 
     <div class="card">
@@ -439,12 +462,21 @@
 
     <div class="card">
       <h2>Engine</h2>
-      <div class="row"><label>Whisper model</label>
+      <div class="row"><label>ASR engine</label>
+        <select id="asr_engine">
+          <option value="whisper">Whisper</option>
+          <option value="parakeet">Parakeet</option>
+        </select></div>
+      <div class="row" id="whisper_model_row"><label>Whisper model</label>
         <select id="whisper_model">
           <option>tiny</option><option>base</option><option>small</option>
           <option>medium</option><option>large-v3</option>
         </select></div>
-      <div class="row"><label>Language</label>
+      <div class="row" id="parakeet_model_row"><label>Parakeet model</label>
+        <select id="parakeet_model">
+          <option value="parakeet-tdt-0.6b-v3-int8">Parakeet TDT 0.6b v3 int8</option>
+        </select></div>
+      <div class="row" id="lang_row"><label>Language</label>
         <select id="adv_lang">
           <option value="">Auto-detect</option>
           <option value="en">English</option><option value="es">Spanish</option>
@@ -463,6 +495,7 @@
         <label class="switch"><input type="checkbox" id="cap_screen" /><span class="sl"></span></label></div>
       <div class="row"><label>Transcribe sound events</label>
         <label class="switch"><input type="checkbox" id="transcribe_sounds" /><span class="sl"></span></label></div>
+      <div class="hint" id="engine_note"></div>
       <div class="hint" id="gpuhint"></div>
     </div>
 
@@ -496,10 +529,10 @@
 
     <details class="card">
       <summary>Advanced</summary>
-      <div class="row"><label>Beam size</label><input type="number" id="adv_beam" min="1" max="10" /></div>
-      <div class="row"><label>Device</label>
+      <div class="row" id="beam_row"><label>Beam size</label><input type="number" id="adv_beam" min="1" max="10" /></div>
+      <div class="row" id="device_row"><label>Device</label>
         <select id="adv_device"><option value="auto">auto (detect)</option><option value="cuda">cuda (NVIDIA GPU)</option><option value="hip">hip (AMD ROCm)</option><option value="vulkan">vulkan (AMD/Intel GPU)</option><option value="cpu">cpu</option></select></div>
-      <div class="row"><label>Compute type</label>
+      <div class="row" id="compute_row"><label>Compute type</label>
         <select id="adv_compute"><option>float16</option><option>int8_float16</option><option>int8</option><option>float32</option></select></div>
       <div class="row"><label>Relay port</label><input type="number" id="adv_relay" /></div>
     </details>

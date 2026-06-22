@@ -132,8 +132,9 @@ class Engine:
 
 # ----------------------------------------------------------------------------- js_api bridge
 class Api:
-    def __init__(self):
+    def __init__(self, force_setup=False):
         self.engine = Engine()
+        self.force_setup = bool(force_setup)
 
     def get_config(self):
         from config import load
@@ -147,6 +148,33 @@ class Api:
         except Exception as e:
             self.engine.log.append("[ui] save_config failed: %s" % e)
             return False
+
+    def setup_requested(self):
+        return self.force_setup
+
+    def detect_hardware(self):
+        try:
+            import gpu_detect
+            info = gpu_detect.hardware_summary()
+            if info["vendor"] == "cpu" and gpu_detect.nvidia_present():
+                info = {"vendor": "nvidia", "name": "NVIDIA GPU", "gfx": None, "vulkan": True}
+            vendor = info["vendor"]
+            if vendor == "nvidia":
+                rec_engine, rec_device = "whisper", "cuda"
+            elif vendor == "amd":
+                rec_engine = "whisper"
+                rec_device = "hip" if gpu_detect.HIP_ENABLED and info.get("gfx") in gpu_detect.HIP_GFX_SUPPORTED else (
+                    "vulkan" if info.get("vulkan") else "cpu")
+            elif vendor == "intel":
+                rec_engine, rec_device = "whisper", "vulkan" if info.get("vulkan") else "cpu"
+            else:
+                rec_engine, rec_device = "parakeet", "cpu"
+            info.update({"recommended_engine": rec_engine, "recommended_device": rec_device})
+            return info
+        except Exception as e:
+            self.engine.log.append("[ui] detect_hardware failed: %s" % e)
+            return {"vendor": "cpu", "name": "CPU", "gfx": None, "vulkan": False,
+                    "recommended_engine": "parakeet", "recommended_device": "cpu"}
 
     def list_clients(self):
         import launch
@@ -337,7 +365,7 @@ def start_dev_reload(window):
 
 def run_gui():
     import webview
-    api = Api()
+    api = Api(force_setup="--setup" in sys.argv)
     window = webview.create_window(
         "Discord Live Transcriber",
         url=paths.resource("ui", "index.html"),

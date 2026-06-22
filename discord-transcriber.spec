@@ -45,6 +45,7 @@ hiddenimports += [
     "numpy", "pefile", "capstone",
     # device routing + first-run runtime downloaders + backends (whispercpp/pkg lazy-imported)
     "gpu_detect", "backends", "cuda_setup", "pkg_setup", "whispercpp_ffi", "whispercpp_setup",
+    "sherpa_setup",
 ]
 
 # Our own source + resources (entry script lives in src/).

@@ -74,6 +74,7 @@ const LU = {
   "trash-2": '<path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" x2="10" y1="11" y2="17"/><line x1="14" x2="14" y1="11" y2="17"/>',
   "info": '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
   "rotate-cw": '<path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/>',
+  "check": '<polyline points="20 6 9 17 4 12"/>',
   "arrow-up-down": '<path d="m21 16-4 4-4-4"/><path d="M17 20V4"/><path d="m3 8 4-4 4 4"/><path d="M7 4v16"/>',
   "download": '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/>',
   "lock": '<rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
@@ -735,15 +736,68 @@ document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () 
 
 // ---------- config form ----------
 let kwList = [];
+const PARAKEET_MODEL_DEFAULT = "parakeet-tdt-0.6b-v3-int8";
+let lastWhisperLang = "";
 const toHex = (s) => {
   s = String(s || "#f04747").trim();
   if (/^#[0-9a-fA-F]{3}$/.test(s)) s = "#" + s.slice(1).split("").map((c) => c + c).join("");
   return /^#[0-9a-fA-F]{6}$/.test(s) ? s.toLowerCase() : "#f04747";
 };
 
+function applyEngineConstraints(engine) {
+  engine = engine === "parakeet" ? "parakeet" : "whisper";
+  const isParakeet = engine === "parakeet";
+  const lang = $("adv_lang");
+  const dev = $("adv_device");
+  if (lang && !lang.dataset.autoText) lang.dataset.autoText = lang.options[0].textContent;
+  if ($("asr_engine")) $("asr_engine").value = engine;
+
+  if (isParakeet) {
+    if (lang && !lang.disabled) lastWhisperLang = lang.value || lastWhisperLang;
+    if (lang) {
+      lang.value = "";
+      lang.options[0].textContent = "Auto (25 European languages)";
+      lang.disabled = true;
+    }
+    if (dev && (dev.value === "hip" || dev.value === "vulkan")) dev.value = "auto";
+  } else if (lang) {
+    lang.disabled = false;
+    lang.options[0].textContent = lang.dataset.autoText || "Auto-detect";
+    if (lastWhisperLang) lang.value = lastWhisperLang;
+  }
+
+  for (const id of ["whisper_model_row", "beam_row", "compute_row"]) {
+    const el = $(id);
+    if (el) el.style.display = isParakeet ? "none" : "";
+  }
+  const pm = $("parakeet_model_row");
+  if (pm) pm.style.display = isParakeet ? "" : "none";
+  const sound = $("transcribe_sounds");
+  if (sound) sound.disabled = isParakeet;
+
+  if (dev) {
+    Array.from(dev.options).forEach((opt) => {
+      const blocked = isParakeet && (opt.value === "hip" || opt.value === "vulkan");
+      opt.disabled = blocked;
+      opt.title = blocked ? "AMD/Intel GPU acceleration is not available for Parakeet. Use Whisper for hip/vulkan, or Parakeet on CPU." : "";
+    });
+  }
+
+  const note = $("engine_note");
+  if (note) {
+    note.textContent = isParakeet
+      ? "Parakeet: fast multilingual speech recognition for 25 European languages, NVIDIA or CPU. Model downloads on first Start."
+      : "";
+    note.style.color = "var(--mut)";
+  }
+  refreshGpu();
+}
+
 function fillForm(c) {
   CFG = c;
+  $("asr_engine").value = c.asr_engine || "whisper";
   $("whisper_model").value = c.whisper_model;
+  $("parakeet_model").value = c.parakeet_model || PARAKEET_MODEL_DEFAULT;
   $("transcribe_sounds").checked = c.transcribe_sounds !== false;
   $("cap_screen").checked = (c.capture || {}).screenshare !== false;
   const g = c.gating || {};
@@ -780,6 +834,8 @@ function fillForm(c) {
   $("adv_device").value = c.device || "auto";
   $("adv_compute").value = c.compute_type || "float16";
   $("adv_relay").value = c.relay_port ?? 8765;
+  lastWhisperLang = c.language || "";
+  applyEngineConstraints(c.asr_engine || "whisper");
   const s = c.self_transcribe || {};
   $("self_en").checked = !!s.enabled;
   $("self_unmute").checked = s.only_when_unmuted !== false;
@@ -797,14 +853,17 @@ $("ui_newtop").addEventListener("change", () => {
 function readForm() {
   const csv = (s) => s.split(",").map((x) => x.trim()).filter(Boolean);
   return Object.assign({}, CFG, {
+    asr_engine: $("asr_engine").value,
     whisper_model: $("whisper_model").value,
+    parakeet_model: $("parakeet_model").value || PARAKEET_MODEL_DEFAULT,
     transcribe_sounds: $("transcribe_sounds").checked,
     voice_events: $("ui_events").checked,
     uncensor: $("g_uncensor").checked,
     capture: Object.assign({}, CFG.capture, { screenshare: $("cap_screen").checked }),
-    language: $("adv_lang").value.trim(),
+    language: $("asr_engine").value === "parakeet" ? "" : $("adv_lang").value.trim(),
     beam_size: parseInt($("adv_beam").value, 10) || 1,
-    device: $("adv_device").value,
+    device: $("asr_engine").value === "parakeet" && ($("adv_device").value === "hip" || $("adv_device").value === "vulkan")
+      ? "auto" : $("adv_device").value,
     compute_type: $("adv_compute").value,
     relay_port: parseInt($("adv_relay").value, 10) || 8765,
     gating: Object.assign({}, CFG.gating, {
@@ -907,7 +966,7 @@ function onSelfIdentity(names) {
   // merge new names in (multiple clients may report); keep order, dedup case-insensitively
   const have = new Set(selfNames.map((n) => n.toLowerCase()));
   for (const n of names) { const k = String(n || "").trim(); if (k && !have.has(k.toLowerCase())) { have.add(k.toLowerCase()); selfNames.push(k); } }
-  if (!kwPromptShown && !(CFG && CFG.keyword_onboarded)) {
+  if (!kwPromptShown && CFG && CFG.setup_completed && !CFG.keyword_onboarded) {
     const s = keywordSuggestions(selfNames);
     if (s.length) { kwPromptShown = true; openKeywordSetup(s, true); }
   }
@@ -953,6 +1012,297 @@ function openKeywordSetup(suggestions, firstRun) {
   document.body.appendChild(bg);
 }
 
+// ---------- first-run setup wizard ----------
+function closeSetupWizard() { const e = $("setupwiz"); if (e) e.remove(); }
+let cachedHw = null;   // hardware does not change within a session: detect once, reuse on re-open
+
+function openSetupWizard(manual) {
+  closeSetupWizard();
+  const firstRun = !(CFG && CFG.setup_completed);
+  // Open instantly from cache/placeholders; the slow probes (a PowerShell GPU query and per-port CDP
+  // checks) load in the background below and refresh only the step that uses them.
+  let hw = cachedHw || { vendor: "cpu", name: "Detecting your hardware…", recommended_engine: "parakeet", recommended_device: "cpu" };
+  let clients = clientList.slice();
+
+  // What `device:auto` resolves to on this machine, in plain language. The wizard never lets a
+  // beginner hand-pick a device, so HIP can never be chosen on an unsupported card here: auto routes
+  // it, and Settings > Advanced keeps the manual override for power users who want it later.
+  const resolvedDeviceLabel = (engine) => {
+    const name = hw.name || "CPU";
+    if (engine === "parakeet") {
+      return hw.vendor === "nvidia" ? "your NVIDIA GPU" : "your CPU (not compatible with AMD or Intel GPUs)";
+    }
+    const dev = (hw.recommended_engine === "whisper" && hw.recommended_device)
+      ? hw.recommended_device
+      : (hw.vendor === "nvidia" ? "cuda" : hw.vulkan ? "vulkan" : "cpu");
+    return dev === "cpu" ? "your CPU" : "your " + name;
+  };
+  const state = {
+    step: 0,
+    engine: firstRun ? "parakeet" : ((CFG && CFG.asr_engine) || "whisper"),  // NeMo is the recommended default
+    device: (CFG && CFG.device) || "auto",   // wizard manages engine only; device stays auto unless overridden in Advanced
+    language: (CFG && CFG.language) || "",
+    parakeet_model: (CFG && CFG.parakeet_model) || PARAKEET_MODEL_DEFAULT,
+    keywords: [],          // built when the keywords step opens, after the restart can detect names
+    keywordsInit: false,
+  };
+  // Case-insensitive merge that keeps the existing order and never drops what's already saved.
+  const mergeKw = (into, more) => {
+    more.forEach((k) => { if (k && !into.some((x) => x.toLowerCase() === k.toLowerCase())) into.push(k); });
+    return into;
+  };
+  if (state.engine === "parakeet" && (state.device === "hip" || state.device === "vulkan")) state.device = "auto";
+
+  const bg = document.createElement("div"); bg.className = "modal-bg"; bg.id = "setupwiz";
+  const card = document.createElement("div"); card.className = "modal wizard";
+  const title = document.createElement("h3");
+  const dots = document.createElement("div"); dots.className = "wiz-steps";
+  const panel = document.createElement("div"); panel.className = "wiz-panel";
+  const actions = document.createElement("div"); actions.className = "actions";
+  const back = document.createElement("button"); back.className = "sec"; back.textContent = "Back";
+  const cancel = document.createElement("button"); cancel.className = "sec"; cancel.textContent = firstRun ? "Skip" : "Cancel";
+  const next = document.createElement("button");
+  actions.append(cancel, back, next);
+  card.append(title, dots, panel, actions);
+  bg.appendChild(card);
+  document.body.appendChild(bg);
+
+  // Keywords come AFTER launch: detecting the user's names needs Discord restarted with the debug port.
+  const steps = () => ["engine"].concat(state.engine === "whisper" ? ["language"] : [], ["launch", "keywords", "done"]);
+  const stepTitle = (kind) => ({
+    engine: "Choose engine",
+    language: "Language",
+    keywords: "Alert keywords",
+    launch: "Launch Discord",
+    done: "Done",
+  })[kind] || "Setup";
+
+  function renderEngine() {
+    panel.innerHTML = "";
+    const p = document.createElement("p");
+    if (state.hwLoading) p.innerHTML = '<span class="wiz-spin"></span>Detecting your hardware…';
+    else p.textContent = "Detected: " + (hw.name || "CPU") + ". Pick how transcription runs; runtimes and models download once on first Start.";
+    panel.appendChild(p);
+
+    const defs = [
+      { id: "parakeet", name: "NeMo Parakeet", tag: "Recommended",
+        points: ["Fastest, high accuracy", "25 European languages, auto-detected", "NVIDIA GPU or CPU"] },
+      { id: "whisper", name: "Whisper", tag: "",
+        points: ["99 languages, or pin one", "Sound captions like [laughs], (applause)", "Any GPU (NVIDIA, AMD, Intel) or CPU"] },
+    ];
+    const cards = document.createElement("div"); cards.className = "engine-cards";
+    defs.forEach((d) => {
+      const cardEl = document.createElement("div");
+      cardEl.className = "engine-card" + (state.engine === d.id ? " sel" : "");
+      const head = document.createElement("div"); head.className = "ec-head";
+      const nm = document.createElement("b"); nm.textContent = d.name; head.appendChild(nm);
+      if (d.tag) { const t = document.createElement("span"); t.className = "ec-tag"; t.textContent = d.tag; head.appendChild(t); }
+      cardEl.appendChild(head);
+      const ul = document.createElement("ul"); ul.className = "ec-points";
+      d.points.forEach((pt) => { const li = document.createElement("li"); li.textContent = pt; ul.appendChild(li); });
+      cardEl.appendChild(ul);
+      const dev = document.createElement("div"); dev.className = "ec-dev";
+      if (state.hwLoading) dev.innerHTML = '<span class="wiz-spin"></span>Checking…';
+      else dev.textContent = "Will use " + resolvedDeviceLabel(d.id);
+      cardEl.appendChild(dev);
+      cardEl.onclick = () => {
+        if (state.engine !== d.id) { state.engine = d.id; state.device = "auto"; }
+        if (state.step >= steps().length) state.step = steps().length - 1;
+        render();
+      };
+      cards.appendChild(cardEl);
+    });
+    panel.appendChild(cards);
+
+    const hint = document.createElement("p"); hint.style.marginTop = "12px";
+    hint.textContent = "Want a specific device like HIP or Vulkan? Set it later in Settings, Advanced.";
+    panel.appendChild(hint);
+  }
+
+  function renderLanguage() {
+    panel.innerHTML = "";
+    const p = document.createElement("p");
+    p.textContent = "Whisper can auto-detect or pin one language for the call.";
+    panel.appendChild(p);
+    const row = document.createElement("div"); row.className = "row";
+    row.innerHTML = '<label>Language</label><select id="wiz_lang"></select>';
+    const sel = row.querySelector("select");
+    Array.from($("adv_lang").options).forEach((src) => {
+      const o = document.createElement("option");
+      o.value = src.value;
+      o.textContent = src.value === "" ? "Auto-detect" : src.textContent;
+      sel.appendChild(o);
+    });
+    sel.value = state.language;
+    sel.onchange = () => { state.language = sel.value; };
+    panel.appendChild(row);
+  }
+
+  function renderKeywords() {
+    // Build from what's already saved, then fold in any detected names. First visit seeds the list;
+    // later visits only add newly detected names so the user's own edits are never undone.
+    if (!state.keywordsInit) {
+      const saved = mergeKw(((CFG && CFG.alerts && CFG.alerts.keywords) || []).slice(), kwList || []);
+      state.keywords = mergeKw(saved, keywordSuggestions(selfNames));
+      state.keywordsInit = true;
+    } else {
+      mergeKw(state.keywords, keywordSuggestions(selfNames));
+    }
+
+    panel.innerHTML = "";
+    const p = document.createElement("p");
+    p.textContent = "Highlight and play a sound when these names or words are spoken. We added your saved ones and any names we detected. Add or remove any.";
+    panel.appendChild(p);
+    const chips = document.createElement("div"); chips.className = "kwchips";
+    const draw = () => {
+      chips.innerHTML = "";
+      if (!state.keywords.length) {
+        const e = document.createElement("span"); e.className = "hint"; e.textContent = "Nothing set yet. Add a name below, or skip this for now.";
+        chips.appendChild(e); return;
+      }
+      state.keywords.forEach((n, i) => {
+        const tag = document.createElement("span"); tag.className = "pill-tag";
+        const b = document.createElement("b"); b.textContent = n;
+        const x = document.createElement("span"); x.className = "pill-x"; x.textContent = "x";
+        x.onclick = () => { state.keywords.splice(i, 1); draw(); };
+        tag.append(b, x); chips.appendChild(tag);
+      });
+    };
+    draw();
+    panel.appendChild(chips);
+    const row = document.createElement("div"); row.className = "row";
+    row.innerHTML = '<label>Add keyword</label><input id="wiz_kw" type="text" placeholder="name or phrase" />';
+    const input = row.querySelector("input");
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        const v = input.value.trim();
+        if (v && !state.keywords.some((k) => k.toLowerCase() === v.toLowerCase())) state.keywords.push(v);
+        input.value = ""; draw();
+      }
+    });
+    panel.appendChild(row);
+    const redetect = document.createElement("button"); redetect.className = "sec"; redetect.textContent = "Detect my names again";
+    redetect.style.alignSelf = "flex-start";
+    redetect.onclick = () => { mergeKw(state.keywords, keywordSuggestions(selfNames)); draw(); };
+    panel.appendChild(redetect);
+  }
+
+  function renderLaunch() {
+    panel.innerHTML = "";
+    const p = document.createElement("p");
+    p.textContent = "Restart Discord with the debug port so we can show speaker names and captions. This closes the current call.";
+    panel.appendChild(p);
+    const running = clients.filter((c) => c.running);   // only the clients actually open right now
+    const box = document.createElement("div");
+    if (!running.length) {
+      box.innerHTML = state.clientsLoading
+        ? '<div class="empty"><span class="wiz-spin"></span>Checking Discord…</div>'
+        : '<div class="empty">Open Discord, then click Refresh.</div>';
+    } else {
+      running.forEach((c) => {
+        const row = document.createElement("div"); row.className = "clientrow";
+        const status = c.live
+          ? '<span class="st ok">' + icon("check") + "Ready</span>"
+          : '<span class="st">Needs a restart</span>';
+        row.innerHTML = '<span class="cdot ' + (c.live ? "good" : "warn") + '"></span>'
+          + '<span class="nm">' + c.folder + "</span>" + status;
+        const btn = document.createElement("button"); btn.className = "sec";
+        if (c.live) { btn.textContent = "Ready"; btn.disabled = true; }
+        else { btn.textContent = "Restart with port"; }
+        btn.onclick = async () => {
+          btn.disabled = true; btn.textContent = "...";
+          try { await API.ensure_client(c.folder, true); } catch (e) {}
+          try { clients = await API.list_clients(); clientList = clients; renderLaunch(); renderClients(); } catch (e) {}
+        };
+        row.appendChild(btn);
+        box.appendChild(row);
+      });
+    }
+    panel.appendChild(box);
+    const refresh = document.createElement("button"); refresh.className = "sec"; refresh.textContent = "Refresh";
+    refresh.style.alignSelf = "flex-start";
+    refresh.onclick = async () => {
+      try { clients = await API.list_clients(); clientList = clients; renderLaunch(); renderClients(); } catch (e) {}
+    };
+    panel.appendChild(refresh);
+  }
+
+  function renderDone() {
+    panel.innerHTML = "";
+    const p = document.createElement("p");
+    const where = resolvedDeviceLabel(state.engine);
+    p.textContent = (state.engine === "parakeet")
+      ? "Ready to use NeMo Parakeet on " + where + ". Language is auto-detected and sound captions stay off for this engine."
+      : "Ready to use Whisper on " + where + ".";
+    panel.appendChild(p);
+  }
+
+  async function finish() {
+    const cfg = readForm();
+    // The wizard list is already seeded from the saved set + detected names, so it is the final
+    // set: this honors anything the user removed here while keeping everything they did not touch.
+    const merged = (state.keywordsInit ? state.keywords : kwList).slice();
+    cfg.asr_engine = state.engine;
+    cfg.device = state.device;
+    cfg.parakeet_model = state.parakeet_model || PARAKEET_MODEL_DEFAULT;
+    cfg.language = state.engine === "parakeet" ? "" : state.language;
+    cfg.keyword_onboarded = true;
+    cfg.setup_completed = true;
+    cfg.alerts = Object.assign({}, cfg.alerts, { keywords: merged });
+    await API.save_config(cfg);
+    CFG = cfg; kwList = merged;
+    fillForm(CFG);
+    pushLiveConfig(CFG);
+    closeSetupWizard();
+    if (engineRunning) markRestartNeeded();
+    toast("Setup saved", false);
+  }
+
+  function render() {
+    const kinds = steps();
+    if (state.step >= kinds.length) state.step = kinds.length - 1;
+    const kind = kinds[state.step];
+    title.textContent = stepTitle(kind);
+    dots.innerHTML = "";
+    kinds.forEach((_, i) => {
+      const d = document.createElement("span"); d.className = "wiz-dot" + (i <= state.step ? " active" : "");
+      dots.appendChild(d);
+    });
+    if (kind === "engine") renderEngine();
+    else if (kind === "language") renderLanguage();
+    else if (kind === "keywords") renderKeywords();
+    else if (kind === "launch") renderLaunch();
+    else renderDone();
+    back.disabled = state.step === 0;
+    next.textContent = kind === "done" ? "Finish" : "Next";
+  }
+
+  back.onclick = () => { if (state.step > 0) { state.step -= 1; render(); } };
+  cancel.onclick = () => { if (firstRun) { CFG.setup_completed = true; scheduleSave(); } closeSetupWizard(); };
+  next.onclick = async () => {
+    const kind = steps()[state.step];
+    if (kind === "done") { await finish(); return; }
+    state.step += 1; render();
+  };
+  bg.addEventListener("click", (e) => { if (e.target === bg && !firstRun) closeSetupWizard(); });
+
+  // Background IO: never blocks opening, never locks the user. Each probe shows an indeterminate
+  // spinner on its step, clears it when done, and refreshes only the step that uses it. The user can
+  // skip ahead at any time. Hardware is cached, so re-opening is instant.
+  state.hwLoading = !cachedHw;
+  state.clientsLoading = true;
+  const rerenderIf = (kinds) => { if ($("setupwiz") && kinds.indexOf(steps()[state.step]) >= 0) render(); };
+  if (!cachedHw) {
+    API.detect_hardware().then((info) => { if (info) { cachedHw = info; hw = info; } })
+      .catch(() => {}).finally(() => { state.hwLoading = false; rerenderIf(["engine", "done"]); });
+  }
+  API.list_clients().then((list) => { if (Array.isArray(list)) { clients = list; clientList = list; } })
+    .catch(() => {}).finally(() => { state.clientsLoading = false; rerenderIf(["launch"]); });
+
+  render();
+}
+
 // ---------- auto-save + toast ----------
 let saveTimer = null;
 function toast(text, saving) {
@@ -979,6 +1329,7 @@ function initAutosave() {
   const v = $("v-settings");
   const onChange = (e) => {
     if (e.target.id === "kw-input") return;
+    if (e.target.id === "asr_engine") applyEngineConstraints(e.target.value);
     if (e.target.id === "adv_device") refreshGpu();
     if (e.target.id === "whisper_model") refreshModels();
     if (e.target.id === "ui_ts" || e.target.id === "ui_tsfmt") renderAllPanels();
@@ -1753,11 +2104,15 @@ async function boot() {
   $("restartbtn").innerHTML = icon("rotate-cw") + "Restart engine to apply";
   $("restartbar-btn").innerHTML = icon("rotate-cw") + "Restart engine";
   $("updatebar-btn").innerHTML = icon("download") + "Update";
+  $("setup_wizard").onclick = () => openSetupWizard(true);
   setInterval(refreshEngine, 3000);
   setInterval(renderSpeakers, 1500);
   document.addEventListener("click", closeAssign);
   window.addEventListener("resize", closeAssign);
   checkUpdate();
+  let forceSetup = false;
+  try { forceSetup = await API.setup_requested(); } catch (e) {}
+  if (forceSetup || !CFG.setup_completed) setTimeout(() => openSetupWizard(!!forceSetup), 150);
 }
 
 // ---------- downloaded models ----------
@@ -1795,8 +2150,10 @@ async function refreshModels() {
 
 // ---------- (i) help popovers with markdown ----------
 const HELP = {
+  asr_engine: "**ASR engine.** Whisper is the broad default with 99 languages, sound events, and all device paths. Parakeet is faster for 25 European languages, auto language only, and uses NVIDIA or CPU.",
   whisper_model: "**Speech model.** Bigger = more accurate, slower, more VRAM.\n- `tiny`/`base` - fastest, rough\n- `small` - good balance (default)\n- `medium`/`large-v3` - best accuracy (needs a strong GPU)\n\nModels download once and are reused - switching back never re-downloads.",
-  adv_lang: "**Language.** `Auto-detect` lets Whisper guess per utterance. Pin a language to stop it switching mid-call and to speed things up slightly.",
+  parakeet_model: "**Parakeet model.** Phase 1 ships the int8 v3 model: 25 European languages, auto-detect, downloaded on first Start.",
+  adv_lang: "**Language.** `Auto-detect` lets Whisper guess per utterance. Pin a language to stop it switching mid-call and to speed things up slightly. Parakeet always uses auto language mode.",
   cap_screen: "**Transcribe stream audio.** Include Go Live / screenshare audio (game, music, video) in transcription. Off = only people's microphones. Applies live, no restart.",
   transcribe_sounds: "**Transcribe sound events.** Keep emitted non-speech captions like `[laughs]`, `(applause)`, or `♪ music ♪`. Off strips those markers and treats sound-only output like silence. Applies live.",
   self_en: "**Transcribe your own microphone** in addition to everyone else's audio. Uses your mic, gated by Discord's own per-client mute/VAD state below.",
@@ -1840,7 +2197,7 @@ const HELP = {
   o_fade: "Start fading older subtitles once this many are stacked.",
   o_minop: "Lowest opacity a faded subtitle reaches (0–1).",
   adv_beam: "**Beam size.** `1` = greedy & fastest. Higher = more accurate but slower.",
-  adv_device: "**auto** picks the best for your GPU. **cuda** = NVIDIA. **hip** = AMD (ROCm); **vulkan** = any AMD/Intel GPU (the reliable AMD fallback if hip won't load). **cpu** works anywhere but is much slower. Runtimes download on first Start.",
+  adv_device: "**auto** picks the best for your GPU. **cuda** = NVIDIA. **hip** = AMD (ROCm); **vulkan** = any AMD/Intel GPU (the reliable AMD fallback if hip won't load). **cpu** works anywhere. Parakeet only supports auto, cuda, and cpu.",
   adv_compute: "Numeric precision. `float16` is best on GPU; `int8`/`int8_float16` use less memory; `float32` is CPU-friendly.",
   adv_relay: "Local WebSocket port the overlay connects to. Change only if `8765` clashes with something.",
 };

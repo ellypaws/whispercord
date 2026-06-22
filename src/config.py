@@ -3,7 +3,9 @@ import os, json
 import paths
 
 DEFAULTS = {
+    "asr_engine": "whisper",             # whisper | parakeet
     "whisper_model": "small",
+    "parakeet_model": "parakeet-tdt-0.6b-v3-int8",
     "language": "",                     # "" = auto-detect; e.g. "en", "ja"
     "beam_size": 1,                     # 1 = greedy (fastest); higher = more accurate
     "device": "auto",                   # auto | cuda | hip | vulkan | cpu  (auto detects best)
@@ -43,6 +45,7 @@ DEFAULTS = {
         "log_autoscroll": True,
     },
     "voice_events": True,               # emit join/leave/mute/deafen/stream events per user
+    "setup_completed": False,           # first-run setup wizard finished
     "keyword_onboarded": False,         # set once the first-run "alert on your name" popup is dismissed/used
     "uncensor": False,                  # restore profanity Whisper self-bleeps ("f*****g" -> "fucking")
     "uncensor_words": [                 # words to un-bleep when `uncensor` is on; edit/delete here

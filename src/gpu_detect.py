@@ -87,6 +87,22 @@ def amd_gpu():
     return None, None
 
 
+def nvidia_gpu_name():
+    """Name of the first NVIDIA GPU from the OS controller list, else None."""
+    for c in _video_controllers():
+        if "VEN_10DE" in c["pnp"]:
+            return c["name"]
+    return None
+
+
+def intel_gpu_name():
+    """Name of the first Intel GPU from the OS controller list, else None."""
+    for c in _video_controllers():
+        if "VEN_8086" in c["pnp"]:
+            return c["name"]
+    return None
+
+
 def has_vulkan_gpu():
     """Any Vulkan-capable GPU present? Proxy: a real GPU vendor + the Vulkan loader installed
     (vulkan-1.dll ships with the GPU driver)."""
@@ -149,9 +165,48 @@ def resolve(requested, log=print):
     return "cpu"
 
 
+def resolve_parakeet(requested, log=print):
+    """Map a Parakeet device request to cuda | cpu.
+
+    sherpa-onnx Parakeet phase 1 supports NVIDIA CUDA and CPU only. hip/vulkan are
+    whisper.cpp devices and never apply to this backend.
+    """
+    req = (requested or "auto").strip().lower()
+
+    if req == "cpu":
+        return "cpu"
+    if req in ("cuda", "auto"):
+        if nvidia_present() or nvidia_gpu_name():
+            return "cuda"
+        if req == "cuda":
+            log("[gpu] parakeet device=cuda but no NVIDIA GPU detected - using cpu")
+        return "cpu"
+
+    log("[gpu] parakeet does not support %s (NVIDIA/CPU only) - using cpu" % req)
+    return "cpu"
+
+
+def hardware_summary():
+    """Best-effort hardware summary for the setup wizard."""
+    nvidia = nvidia_gpu_name()
+    gfx, amd = amd_gpu()
+    intel = intel_gpu_name()
+    if nvidia:
+        return {"vendor": "nvidia", "name": nvidia, "gfx": None, "vulkan": has_vulkan_gpu()}
+    if amd:
+        return {"vendor": "amd", "name": amd, "gfx": gfx, "vulkan": has_vulkan_gpu()}
+    if intel:
+        return {"vendor": "intel", "name": intel, "gfx": None, "vulkan": has_vulkan_gpu()}
+    return {"vendor": "cpu", "name": "CPU", "gfx": None, "vulkan": False}
+
+
 if __name__ == "__main__":
     print("nvidia:", nvidia_present())
+    print("nvidia name:", nvidia_gpu_name())
     print("amd:", amd_gpu())
+    print("intel:", intel_gpu_name())
     print("vulkan-capable:", has_vulkan_gpu())
     for d in ("auto", "cuda", "hip", "vulkan", "cpu"):
         print("resolve(%-7s) ->" % d, resolve(d, log=lambda *a: None))
+    for d in ("auto", "cuda", "hip", "vulkan", "cpu"):
+        print("resolve_parakeet(%-7s) ->" % d, resolve_parakeet(d, log=lambda *a: None))
