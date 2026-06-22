@@ -201,6 +201,15 @@
   details.card > summary::before { content:"▸  "; }
   details.card[open] > summary::before { content:"▾  "; }
   details.card[open] > summary { margin-bottom:10px; }
+  /* nested collapsible inside a card (e.g. fine tuning under Silence gating) */
+  details.subadv { margin-top:12px; border-top:1px solid var(--line); padding-top:12px; }
+  details.subadv > summary { cursor:pointer; font-size:11px; text-transform:uppercase; letter-spacing:.6px;
+            color:var(--mut); font-weight:600; list-style:none; outline:none; }
+  details.subadv > summary::-webkit-details-marker { display:none; }
+  details.subadv > summary::before { content:"▸  "; }
+  details.subadv[open] > summary::before { content:"▾  "; }
+  details.subadv[open] > summary { margin-bottom:10px; }
+  .row.disabled { opacity:.45; }
   /* toast */
   .toast { position:fixed; bottom:18px; right:18px; background:var(--panel); border:1px solid var(--line); color:var(--txt);
            padding:9px 14px; border-radius:8px; box-shadow:0 6px 20px rgba(0,0,0,.5); font-size:13px; opacity:0;
@@ -519,6 +528,26 @@
         <input type="text" id="g_drop" placeholder="thank you, bye, you" /></div>
       <div class="row"><label>Uncensor profanity</label>
         <label class="switch"><input type="checkbox" id="g_uncensor" /><span class="sl"></span></label></div>
+
+      <details class="subadv">
+        <summary>Fine tuning</summary>
+        <div class="row"><label>Silence gap (s)</label>
+          <input type="number" id="g_silence" min="0.2" max="5" step="0.1" /></div>
+        <div class="row"><label>Speaking grace (s)</label>
+          <input type="number" id="g_grace" min="2" max="10" step="0.5" /></div>
+        <div class="row"><label>Min utterance (s)</label>
+          <input type="number" id="g_minutt" min="0.1" max="5" step="0.1" /></div>
+        <div class="row"><label>Max utterance (s)</label>
+          <input type="number" id="g_maxutt" min="3" max="60" step="1" /></div>
+        <div class="row"><label>Interim update (s)</label>
+          <input type="number" id="g_interim" min="0.3" max="10" step="0.1" /></div>
+        <div class="row"><label>Stuck timeout (s)</label>
+          <input type="number" id="g_stale" min="1" max="15" step="0.5" /></div>
+        <div class="row" id="g_nospeech_row"><label>No-speech threshold</label>
+          <input type="number" id="g_nospeech" min="0" max="1" step="0.05" /></div>
+        <div class="row" id="g_logprob_row"><label>Min avg logprob</label>
+          <input type="number" id="g_logprob" min="-5" max="0" step="0.1" /></div>
+      </details>
     </div>
 
     <div class="card">
@@ -541,7 +570,10 @@
         <select id="adv_device"><option value="auto">auto (detect)</option><option value="cuda">cuda (NVIDIA GPU)</option><option value="hip">hip (AMD ROCm)</option><option value="vulkan">vulkan (AMD/Intel GPU)</option><option value="cpu">cpu</option></select></div>
       <div class="row" id="compute_row"><label>Compute type</label>
         <select id="adv_compute"><option>float16</option><option>int8_float16</option><option>int8</option><option>float32</option></select></div>
+      <div class="row" id="threads_row"><label>CPU threads</label><input type="number" id="adv_threads" min="0" max="64" step="1" /></div>
       <div class="row"><label>Relay port</label><input type="number" id="adv_relay" /></div>
+      <div class="row"><label>Debug ports</label><input type="text" id="adv_cdp" placeholder="9223, 9224, 9225, 9226" /></div>
+      <div class="row"><label>Screenshare detect (s)</label><input type="number" id="adv_scrdetect" min="3" max="120" step="1" /></div>
     </details>
 
     <div class="savebar">

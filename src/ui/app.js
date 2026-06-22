@@ -775,6 +775,21 @@ function applyEngineConstraints(engine) {
   const sound = $("transcribe_sounds");
   if (sound) sound.disabled = isParakeet;
 
+  // Parakeet (sherpa-onnx transducer) emits text only: no Silero VAD pre-filter and no per-segment
+  // confidence, so VAD and the confidence thresholds are inert. Grey them out so it's clear they
+  // don't apply, rather than letting the user tune a value the engine never reads.
+  const inert = isParakeet
+    ? "Not used by Parakeet (it emits text only, with no VAD or confidence scores). Applies to Whisper."
+    : "";
+  for (const id of ["g_vad", "g_nospeech", "g_logprob"]) {
+    const el = $(id);
+    if (!el) continue;
+    el.disabled = isParakeet;
+    el.title = inert;
+    const row = el.closest(".row");
+    if (row) { row.classList.toggle("disabled", isParakeet); row.title = inert; }
+  }
+
   if (dev) {
     Array.from(dev.options).forEach((opt) => {
       const blocked = isParakeet && (opt.value === "hip" || opt.value === "vulkan");
@@ -807,6 +822,15 @@ function fillForm(c) {
   $("g_reqspeak").checked = g.require_speaking !== false;
   $("g_drop").value = (g.drop_phrases || []).join(", ");
   $("g_uncensor").checked = !!c.uncensor;
+  const cap = c.capture || {};
+  $("g_silence").value = c.silence_s ?? 1.0;
+  $("g_grace").value = g.speaking_grace_s ?? 2.5;
+  $("g_minutt").value = c.min_utt_s ?? 0.4;
+  $("g_maxutt").value = c.max_utt_s ?? 12;
+  $("g_interim").value = c.interim_every_s ?? 1.0;
+  $("g_stale").value = cap.max_stale_s ?? 3.0;
+  $("g_nospeech").value = g.no_speech_threshold ?? 0.6;
+  $("g_logprob").value = g.min_avg_logprob ?? -1.0;
   const a = c.alerts || {};
   kwList = (a.keywords || []).slice(); renderPills();
   $("a_sound").checked = a.sound !== false;
@@ -833,7 +857,10 @@ function fillForm(c) {
   $("adv_beam").value = c.beam_size ?? 1;
   $("adv_device").value = c.device || "auto";
   $("adv_compute").value = c.compute_type || "float16";
+  $("adv_threads").value = c.num_threads ?? 0;
   $("adv_relay").value = c.relay_port ?? 8765;
+  $("adv_cdp").value = (c.cdp_ports || []).join(", ");
+  $("adv_scrdetect").value = cap.screenshare_detect_s ?? 18;
   lastWhisperLang = c.language || "";
   applyEngineConstraints(c.asr_engine || "whisper");
   const s = c.self_transcribe || {};
@@ -852,6 +879,8 @@ $("ui_newtop").addEventListener("change", () => {
 
 function readForm() {
   const csv = (s) => s.split(",").map((x) => x.trim()).filter(Boolean);
+  const num = (id, dflt) => { const v = parseFloat($(id).value); return Number.isFinite(v) ? v : dflt; };
+  const ports = csv($("adv_cdp").value).map((x) => parseInt(x, 10)).filter((n) => Number.isFinite(n));
   return Object.assign({}, CFG, {
     asr_engine: $("asr_engine").value,
     whisper_model: $("whisper_model").value,
@@ -859,17 +888,30 @@ function readForm() {
     transcribe_sounds: $("transcribe_sounds").checked,
     voice_events: $("ui_events").checked,
     uncensor: $("g_uncensor").checked,
-    capture: Object.assign({}, CFG.capture, { screenshare: $("cap_screen").checked }),
+    capture: Object.assign({}, CFG.capture, {
+      screenshare: $("cap_screen").checked,
+      max_stale_s: num("g_stale", 3.0),
+      screenshare_detect_s: num("adv_scrdetect", 18),
+    }),
     language: $("asr_engine").value === "parakeet" ? "" : $("adv_lang").value.trim(),
     beam_size: parseInt($("adv_beam").value, 10) || 1,
     device: $("asr_engine").value === "parakeet" && ($("adv_device").value === "hip" || $("adv_device").value === "vulkan")
       ? "auto" : $("adv_device").value,
     compute_type: $("adv_compute").value,
+    num_threads: Math.max(0, parseInt($("adv_threads").value, 10) || 0),
     relay_port: parseInt($("adv_relay").value, 10) || 8765,
+    cdp_ports: ports.length ? ports : CFG.cdp_ports,
+    silence_s: num("g_silence", 1.0),
+    min_utt_s: num("g_minutt", 0.4),
+    max_utt_s: num("g_maxutt", 12),
+    interim_every_s: num("g_interim", 1.0),
     gating: Object.assign({}, CFG.gating, {
       min_rms_dbfs: parseFloat($("g_dbfs").value),
       vad: $("g_vad").checked,
       require_speaking: $("g_reqspeak").checked,
+      speaking_grace_s: num("g_grace", 2.5),
+      no_speech_threshold: num("g_nospeech", 0.6),
+      min_avg_logprob: num("g_logprob", -1.0),
       drop_phrases: csv($("g_drop").value),
     }),
     alerts: Object.assign({}, CFG.alerts, {
@@ -1021,7 +1063,7 @@ function openSetupWizard(manual) {
   const firstRun = !(CFG && CFG.setup_completed);
   // Open instantly from cache/placeholders; the slow probes (a PowerShell GPU query and per-port CDP
   // checks) load in the background below and refresh only the step that uses them.
-  let hw = cachedHw || { vendor: "cpu", name: "Detecting your hardware…", recommended_engine: "parakeet", recommended_device: "cpu" };
+  let hw = cachedHw || { vendor: "cpu", name: "Detecting your hardware…", recommended_engine: "whisper", recommended_device: "cpu" };
   let clients = clientList.slice();
 
   // What `device:auto` resolves to on this machine, in plain language. The wizard never lets a
@@ -1039,7 +1081,11 @@ function openSetupWizard(manual) {
   };
   const state = {
     step: 0,
-    engine: firstRun ? "parakeet" : ((CFG && CFG.asr_engine) || "whisper"),  // NeMo is the recommended default
+    // First run follows the hardware recommendation (Whisper on any GPU, Parakeet only on CPU-only,
+    // see app.py detect_hardware). autoEngine stays true until the user picks a card themselves, so a
+    // late hardware-detection result can still update the default without overriding a manual choice.
+    engine: firstRun ? (hw.recommended_engine || "whisper") : ((CFG && CFG.asr_engine) || "whisper"),
+    autoEngine: firstRun,
     device: (CFG && CFG.device) || "auto",   // wizard manages engine only; device stays auto unless overridden in Advanced
     language: (CFG && CFG.language) || "",
     parakeet_model: (CFG && CFG.parakeet_model) || PARAKEET_MODEL_DEFAULT,
@@ -1084,12 +1130,15 @@ function openSetupWizard(manual) {
     else p.textContent = "Detected: " + (hw.name || "CPU") + ". Pick how transcription runs; runtimes and models download once on first Start.";
     panel.appendChild(p);
 
+    const rec = hw.recommended_engine || "whisper";
     const defs = [
-      { id: "parakeet", name: "NeMo Parakeet", tag: "Recommended",
-        points: ["Fastest, high accuracy", "25 European languages, auto-detected", "NVIDIA GPU or CPU"] },
-      { id: "whisper", name: "Whisper", tag: "",
-        points: ["99 languages, or pin one", "Sound captions like [laughs], (applause)", "Any GPU (NVIDIA, AMD, Intel) or CPU"] },
+      { id: "whisper", name: "Whisper",
+        points: ["Most accurate, best for noisy calls", "99 languages, or pin one", "Sound captions like [laughs], (applause)", "Any GPU (NVIDIA, AMD, Intel) or CPU"] },
+      { id: "parakeet", name: "NeMo Parakeet",
+        points: ["Fast and light on memory", "25 European languages, auto-detected", "Fully offline; NVIDIA GPU or CPU"] },
     ];
+    defs.forEach((d) => { d.tag = d.id === rec ? "Recommended" : ""; });   // badge follows the hardware fit
+    defs.sort((a, b) => (b.id === rec) - (a.id === rec));                  // recommended card first
     const cards = document.createElement("div"); cards.className = "engine-cards";
     defs.forEach((d) => {
       const cardEl = document.createElement("div");
@@ -1106,6 +1155,7 @@ function openSetupWizard(manual) {
       else dev.textContent = "Will use " + resolvedDeviceLabel(d.id);
       cardEl.appendChild(dev);
       cardEl.onclick = () => {
+        state.autoEngine = false;                 // explicit choice: detection won't change it later
         if (state.engine !== d.id) { state.engine = d.id; state.device = "auto"; }
         if (state.step >= steps().length) state.step = steps().length - 1;
         render();
@@ -1294,8 +1344,15 @@ function openSetupWizard(manual) {
   state.clientsLoading = true;
   const rerenderIf = (kinds) => { if ($("setupwiz") && kinds.indexOf(steps()[state.step]) >= 0) render(); };
   if (!cachedHw) {
-    API.detect_hardware().then((info) => { if (info) { cachedHw = info; hw = info; } })
-      .catch(() => {}).finally(() => { state.hwLoading = false; rerenderIf(["engine", "done"]); });
+    API.detect_hardware().then((info) => {
+      if (info) {
+        cachedHw = info; hw = info;
+        // Honor the detected recommendation unless the user already picked a card themselves.
+        if (firstRun && state.autoEngine && info.recommended_engine) {
+          state.engine = info.recommended_engine; state.device = "auto";
+        }
+      }
+    }).catch(() => {}).finally(() => { state.hwLoading = false; rerenderIf(["engine", "done"]); });
   }
   API.list_clients().then((list) => { if (Array.isArray(list)) { clients = list; clientList = list; } })
     .catch(() => {}).finally(() => { state.clientsLoading = false; rerenderIf(["launch"]); });
@@ -1351,6 +1408,7 @@ const LIVE_FIELDS = new Set([
   "transcribe_sounds",                                     // backend suppressors + text cleanup
   "self_en", "self_unmute", "self_vad", "self_ns", "self_device",  // own-voice (incl. live device switch)
   "g_dbfs", "g_vad", "g_reqspeak", "g_drop",               // silence gating
+  "g_grace", "g_nospeech", "g_logprob", "g_stale", "adv_scrdetect",  // fine tuning mirrored by apply_live_config
   "g_uncensor",                                            // restore self-bleeped profanity
   "adv_lang", "adv_beam",                                  // language + beam size
 ]);
@@ -2246,8 +2304,19 @@ const HELP = {
   o_minop: "Lowest opacity a faded subtitle reaches (0–1).",
   adv_beam: "**Beam size.** `1` = greedy & fastest. Higher = more accurate but slower.",
   adv_device: "**auto** picks the best for your GPU. **cuda** = NVIDIA. **hip** = AMD (ROCm); **vulkan** = any AMD/Intel GPU (the reliable AMD fallback if hip won't load). **cpu** works anywhere. Parakeet only supports auto, cuda, and cpu.",
-  adv_compute: "Numeric precision. `float16` is best on GPU; `int8`/`int8_float16` use less memory; `float32` is CPU-friendly.",
+  adv_compute: "Numeric precision. `float16` is best on GPU; `int8`/`int8_float16` use less memory; `float32` is CPU-friendly. Whisper only (Parakeet always runs int8).",
+  adv_threads: "**CPU threads** the model uses. `0` = auto (library default). Higher can speed up CPU transcription; ignored on GPU. Needs a restart.",
   adv_relay: "Local WebSocket port the overlay connects to. Change only if `8765` clashes with something.",
+  adv_cdp: "**Discord debug ports** to look for, comma-separated. The defaults cover PTB/Stable/Canary/Dev. Change only if you launch Discord with a custom `--remote-debugging-port`. Needs a restart.",
+  adv_scrdetect: "**Screenshare detect (s).** A stream that stays active this long with no silence gap, while someone is screensharing, is treated as screenshare audio rather than speech. Applies live.",
+  g_silence: "**Silence gap (s).** How long the audio must stay quiet before the current line ends. Higher = fewer, longer lines (less splitting); lower = snappier but choppier. Applies to both engines. Needs a restart.",
+  g_grace: "**Speaking grace (s).** How long Discord's indicator must read \"not speaking\" before a line is cut. Floored at 2s so normal between-sentence pauses don't chop a sentence. Applies live.",
+  g_minutt: "**Min utterance (s).** Audio shorter than this is dropped instead of transcribed (kills stray blips). Needs a restart.",
+  g_maxutt: "**Max utterance (s).** Hard cap: a line this long is finalized even if the speaker keeps going, so a monologue still shows. Needs a restart.",
+  g_interim: "**Interim update (s).** How often a growing line is re-transcribed to show a live partial. Lower = more responsive, more CPU/GPU. Needs a restart.",
+  g_stale: "**Stuck timeout (s).** If a microphone line's text stops changing for this long (model looping on the same partial), cut it loose so the subtitle can clear. Applies live.",
+  g_nospeech: "**No-speech threshold.** A segment whose no-speech probability is above this is treated as suspect (helps drop silence hallucinations). Whisper only. Applies live.",
+  g_logprob: "**Min avg logprob.** A segment whose average log-probability is below this is treated as low-confidence. Less negative = stricter. Whisper only. Applies live.",
 };
 let helpPop = null;
 function closeHelp() { if (helpPop) { helpPop.remove(); helpPop = null; } }

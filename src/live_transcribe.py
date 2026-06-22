@@ -64,6 +64,7 @@ LANGUAGE = (CFG.get("language") or "").strip() or None
 BEAM = int(CFG.get("beam_size", 1))
 DEVICE = CFG.get("device", "cuda")
 COMPUTE = CFG.get("compute_type", "float16")
+NUM_THREADS = int(CFG.get("num_threads", 0) or 0)   # 0 = auto / library default
 TRANSCRIBE_SOUNDS = bool(CFG.get("transcribe_sounds", True))
 RELAY_PORT = CFG["relay_port"]
 SILENCE_S = CFG["silence_s"]        # gap that ends an utterance
@@ -1116,7 +1117,7 @@ def main():
             try:
                 emit_progress("model", "Preparing Parakeet speech runtime")
                 backend = backends.load_sherpa_onnx(
-                    PARAKEET_MODEL, dev,
+                    PARAKEET_MODEL, dev, num_threads=(NUM_THREADS if NUM_THREADS > 0 else 4),
                     log=print, on_progress=lambda pct, label: emit_progress("model", label, pct))
                 DEVICE, COMPUTE = dev, "int8"
                 print("[parakeet] ready (model=%s, backend=sherpa/%s, lang=auto-25-eu)"
@@ -1191,7 +1192,7 @@ def main():
             print("[whisper] '%s' not cached - downloading once into %s" % (MODEL, mr))
             emit_progress("model", "Downloading speech model '%s' (first use)" % MODEL)
         def _load(dev, comp, local_only):
-            return WhisperModel(MODEL, device=dev, compute_type=comp,
+            return WhisperModel(MODEL, device=dev, compute_type=comp, cpu_threads=NUM_THREADS,
                                 download_root=mr, local_files_only=local_only)
         try:
             model = _load(DEVICE, COMPUTE, cached)

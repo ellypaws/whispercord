@@ -10,12 +10,13 @@ DEFAULTS = {
     "beam_size": 1,                     # 1 = greedy (fastest); higher = more accurate
     "device": "auto",                   # auto | cuda | hip | vulkan | cpu  (auto detects best)
     "compute_type": "float16",          # float16 (gpu) | int8_float16 | int8 (cpu)
+    "num_threads": 0,                   # CPU worker threads for the model (0 = auto / library default)
     "transcribe_sounds": True,          # keep emitted non-speech events like [laughs] / ♪ music ♪
     "inject_overlay": True,             # also show subtitles inside Discord (via CDP)
     "relay_port": 8765,
     "cdp_port": 9223,                   # back-compat single port
     "cdp_ports": [9223, 9224, 9225, 9226],  # PTB / Discord / Canary / Dev debug ports (any reachable used)
-    "silence_s": 0.6,
+    "silence_s": 1.0,                   # quiet gap that ends an utterance; higher = fewer, longer lines
     "interim_every_s": 1.0,
     "min_utt_s": 0.4,
     "max_utt_s": 12.0,
