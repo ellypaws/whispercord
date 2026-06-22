@@ -7,7 +7,7 @@ One entry point, two modes:
 Packaged as a single PyInstaller exe: the GUI re-execs the same exe with --backend,
 so there is only one binary to ship. Settings live in config.json next to the exe.
 """
-import os, sys, json, subprocess, threading, collections
+import os, sys, json, time, subprocess, threading, collections
 
 import paths
 
@@ -66,14 +66,27 @@ PROG_IDLE = {"stage": "idle", "label": "", "pct": None, "done": True, "active": 
 
 
 class Engine:
+    # crash-loop guard: more than this many unexpected exits within the window -> stop retrying
+    MAX_RESTARTS = 5
+    RESTART_WINDOW_S = 120.0
+
     def __init__(self):
         self.proc = None
         self.log = collections.deque(maxlen=600)
         self.progress = dict(PROG_IDLE)
+        self._want_running = False              # True between start() and stop(); drives auto-restart
+        self._restarts = collections.deque()    # monotonic timestamps of recent unexpected exits
 
     def start(self):
         if self.proc and self.proc.poll() is None:
             return True
+        self._want_running = True
+        self._restarts.clear()
+        self.log.clear()                        # fresh log only on a user-initiated start
+        self._spawn()
+        return True
+
+    def _spawn(self):
         # show the banner immediately; the backend refines it as soon as it reports
         self.progress = {"stage": "starting", "label": "Starting engine…", "pct": None,
                          "done": False, "active": True}
@@ -85,18 +98,16 @@ class Engine:
         env["PYTHONUTF8"] = "1"
         env["PYTHONUNBUFFERED"] = "1"
         env.setdefault("VT_INJECT_OVERLAY", "1")   # on by default; honour VT_INJECT_OVERLAY=0 to disable all overlays
-        self.log.clear()
         self.proc = subprocess.Popen(
             args, cwd=paths.resource_dir(), env=env,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, encoding="utf-8", errors="replace", bufsize=1,
             creationflags=NO_WINDOW)
-        threading.Thread(target=self._pump, daemon=True).start()
-        return True
+        threading.Thread(target=self._pump, args=(self.proc,), daemon=True).start()
 
-    def _pump(self):
+    def _pump(self, proc):
         try:
-            for line in self.proc.stdout:
+            for line in proc.stdout:
                 line = line.rstrip("\n")
                 if line.startswith(PROG_TAG):
                     try:
@@ -109,9 +120,33 @@ class Engine:
                 self.log.append(line)
         except Exception:
             pass
-        self.progress = dict(PROG_IDLE)   # stream closed -> engine exited; clear the banner
+        # stdout closed -> this process exited. If the user didn't ask to stop, supervise it.
+        if not self._want_running:
+            self.progress = dict(PROG_IDLE)
+            return
+        code = proc.poll()
+        now = time.monotonic()
+        self._restarts.append(now)
+        while self._restarts and now - self._restarts[0] > self.RESTART_WINDOW_S:
+            self._restarts.popleft()
+        if len(self._restarts) > self.MAX_RESTARTS:
+            self._want_running = False
+            self.log.append("[ui] engine exited %d times in %ds (last code %s) - not restarting; "
+                            "see the log above for the cause" % (len(self._restarts),
+                            int(self.RESTART_WINDOW_S), code))
+            self.progress = {"stage": "error", "label": "Engine keeps stopping - paused. Check the log.",
+                             "pct": None, "done": True, "active": False}
+            return
+        self.log.append("[ui] engine exited unexpectedly (code %s) - restarting (%d/%d)"
+                        % (code, len(self._restarts), self.MAX_RESTARTS))
+        self.progress = {"stage": "starting", "label": "Engine stopped unexpectedly - restarting…",
+                         "pct": None, "done": False, "active": True}
+        time.sleep(min(5.0, float(len(self._restarts))))   # brief backoff that grows with each retry
+        if self._want_running:
+            self._spawn()
 
     def stop(self):
+        self._want_running = False              # tell the supervisor this exit is intentional
         cleanup_overlays(self.log.append)
         if self.proc and self.proc.poll() is None:
             try:

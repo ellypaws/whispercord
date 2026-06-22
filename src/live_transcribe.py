@@ -10,7 +10,7 @@ Env:
   WHISPER_MODEL   faster-whisper model (default 'small'; use 'large-v3' for best quality on a 3090)
   RELAY_PORT      websocket port (default 8765)
 """
-import os, sys, re, glob, time, json, threading, collections, asyncio
+import os, sys, re, glob, time, json, threading, collections, asyncio, traceback
 
 # Windows consoles default to cp1252; transcripts contain emoji/CJK. Never crash on print.
 try:
@@ -1084,6 +1084,23 @@ def mapping_thread():
                     len(active), solo, " ".join(summ)))
 
 # ---------------- transcription ----------------
+def purge_stale_sources(now, idle_s=600.0):
+    """Drop per-source state for streams gone silent a long time. Discord allocates a new
+    ChannelReceive (a new src key) whenever someone reconnects/rejoins, so over a multi-hour
+    session these maps would grow without bound and slowly leak memory. A purged src that ever
+    returns is simply recreated on its next frame; nothing breaks. Manual pins are kept."""
+    with lock:
+        stale = [s for s, t in list(last_frame.items()) if now - t > idle_s and s not in manual_assign]
+        for s in stale:
+            for d in (buffers, last_frame, active_since, last_emit, last_loud, last_change,
+                      last_text, announced, interim_at, corr, bind_votes, src_ssrc, src_kind,
+                      src_client, src2user):
+                d.pop(s, None)
+            native_kind.discard(s)
+    if stale:
+        print("[gc] purged %d idle source(s)" % len(stale))
+
+
 def main():
     global ASR_ENGINE, DEVICE, COMPUTE
     load_user_cache()
@@ -1200,10 +1217,23 @@ def main():
         print("[whisper] ready (lang=%s, beam=%d, backend=ct2/%s)" % (LANGUAGE or "auto", BEAM, DEVICE))
     emit_progress("ready", "Engine ready", 100, done=True)
 
-    threading.Thread(target=start_relay, daemon=True).start()
-    threading.Thread(target=mapping_thread, daemon=True).start()
-    threading.Thread(target=self_capture_thread, daemon=True).start()
-    threading.Thread(target=attach_thread, daemon=True).start()  # hook + auto-reattach restarted clients
+    # Supervise the worker threads: if one raises, restart it rather than silently losing that
+    # subsystem (relay/overlay, speaker mapping, mic capture) for the rest of the session, which
+    # would look like the engine "stopping" even though the process is still alive.
+    def _supervised(target, name):
+        def run():
+            while True:
+                try:
+                    target()
+                except Exception:
+                    print("[run] thread %r crashed; restarting in 2s:" % name)
+                    traceback.print_exc()
+                    time.sleep(2.0)
+        threading.Thread(target=run, daemon=True, name=name).start()
+    _supervised(start_relay, "relay")
+    _supervised(mapping_thread, "mapping")
+    _supervised(self_capture_thread, "self_capture")
+    _supervised(attach_thread, "attach")  # hook + auto-reattach restarted clients
 
     def rms_dbfs(audio):
         if audio.size == 0:
@@ -1269,11 +1299,9 @@ def main():
         while True:
             time.sleep(1.5)
             broadcast_status()
-    threading.Thread(target=heartbeat, daemon=True).start()
+    _supervised(heartbeat, "heartbeat")
 
-    print("[run] live transcription running (Ctrl+C to stop)")
-    while True:
-        time.sleep(0.2)
+    def _tick():
         now = time.time()
         jobs = []  # (src, bytes|None, kind)
         keepalives = []
@@ -1352,6 +1380,25 @@ def main():
                 emit(src, (b or "").strip() if isinstance(b, str) else "", True)
         for src in keepalives:
             keepalive(src)
+
+    print("[run] live transcription running (Ctrl+C to stop)")
+    last_purge = time.time()
+    while True:
+        time.sleep(0.2)
+        # A single bad chunk (transient CUDA error, odd buffer) must never kill the whole engine:
+        # log it and keep going. Hard crashes the process can't catch are restarted by the wrapper.
+        try:
+            _tick()
+        except Exception:
+            print("[run] transcription tick failed (continuing):")
+            traceback.print_exc()
+        now = time.time()
+        if now - last_purge > 60.0:
+            last_purge = now
+            try:
+                purge_stale_sources(now)
+            except Exception:
+                pass
 
 if __name__ == "__main__":
     main()
