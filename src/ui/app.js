@@ -1562,6 +1562,34 @@ async function pumpProgress() {
 }
 
 // ---------- console log ----------
+async function copyText(text) {
+  // pywebview's embedded webview is inconsistent about navigator.clipboard, so fall back to a
+  // hidden textarea + execCommand which works in the WebView2/CEF host.
+  try {
+    if (navigator.clipboard && window.isSecureContext) { await navigator.clipboard.writeText(text); return true; }
+  } catch (e) {}
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+    document.body.appendChild(ta); ta.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    return ok;
+  } catch (e) { return false; }
+}
+function bindLogButtons() {
+  const copyBtn = $("logcopy"), clearBtn = $("logclear");
+  if (copyBtn) copyBtn.onclick = async () => {
+    const sel = String(window.getSelection());
+    const text = sel.trim() ? sel : ($("log").textContent || "");
+    toast((await copyText(text)) ? "Log copied" : "Copy failed");
+  };
+  if (clearBtn) clearBtn.onclick = async () => {
+    try { if (API) await API.clear_log(); } catch (e) {}
+    $("log").textContent = "";
+    toast("Log cleared");
+  };
+}
 async function pumpLog() {
   if (API) {
     try {
@@ -2097,6 +2125,7 @@ async function boot() {
   await refreshEngine();
   refreshGpu();
   connectRelay();
+  bindLogButtons();
   pumpLog();
   pumpProgress();
   refreshModels();

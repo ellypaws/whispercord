@@ -44,6 +44,9 @@
   .view { display:none; flex:1; min-height:0; }
   #v-live.active, #v-log.active { display:flex; }
   #v-live { flex-direction:column; gap:10px; }
+  #v-log { flex-direction:column; gap:8px; }
+  .log-bar { display:flex; align-items:center; gap:8px; flex:0 0 auto; }
+  .log-bar .hint { color:var(--mut); font-size:11px; }
   #v-settings.active, #v-speakers.active { display:block; overflow-y:auto; }
   .card { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:14px; margin-bottom:12px; }
   .card h2 { font-size:12px; text-transform:uppercase; letter-spacing:.6px; color:var(--mut); margin:0 0 10px; }
@@ -82,7 +85,8 @@
   .toggrow .st { min-width:0; color:var(--mut); font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .toggrow .sub { color:var(--mut); font-size:11px; }
   #log { background:#111214; border:1px solid var(--line); border-radius:8px; padding:10px;
-         flex:1; min-height:0; overflow:auto; font:11px/1.4 ui-monospace,Consolas,monospace; color:#b5bac1; white-space:pre-wrap; }
+         flex:1; min-height:0; overflow:auto; font:11px/1.4 ui-monospace,Consolas,monospace; color:#b5bac1; white-space:pre-wrap;
+         user-select:text; -webkit-user-select:text; cursor:text; }
   .search-wrap { position:relative; flex:0 0 auto; margin-left:auto; align-self:center; margin-bottom:6px; }
   .searchbox { display:flex; align-items:center; gap:6px; width:34px; min-height:32px; background:var(--panel2);
                border:1px solid var(--line); border-radius:999px; padding:5px 8px; overflow:hidden;
@@ -546,6 +550,11 @@
   <div id="toast" class="toast"><span class="tdot"></span><span id="toasttext">Saved</span></div>
 
   <section id="v-log" class="view">
+    <div class="log-bar">
+      <button id="logcopy" class="sec">Copy log</button>
+      <button id="logclear" class="sec">Clear</button>
+      <span class="hint">Select any text to copy just part of it.</span>
+    </div>
     <div id="log"></div>
   </section>
 </main>

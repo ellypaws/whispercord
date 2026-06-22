@@ -41,9 +41,29 @@ def data_dir():
     return d
 
 
+def cache_dir():
+    """Where large downloaded runtimes/models live (CUDA libs, sherpa-onnx, GGML models).
+
+    Always the per-user folder, even from source: these are hundreds of MB and must never
+    land next to the exe or in the repo. config.json stays in data_dir() for easy iteration;
+    only the heavy delegated runtimes go here. When frozen this equals data_dir(), so existing
+    installs keep the same paths.
+    """
+    d = _user_data_dir()
+    try:
+        os.makedirs(d, exist_ok=True)
+    except Exception:
+        pass
+    return d
+
+
 def resource(*p):
     return os.path.join(resource_dir(), *p)
 
 
 def data(*p):
     return os.path.join(data_dir(), *p)
+
+
+def cache(*p):
+    return os.path.join(cache_dir(), *p)

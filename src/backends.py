@@ -112,6 +112,8 @@ def load_sherpa_onnx(model_name, device, *, num_threads=4, log=print, on_progres
     sherpa = sherpa_setup.ensure_runtime(device, log=log, on_progress=on_progress)
     d = sherpa_setup.ensure_model(model_name, log=log, on_progress=on_progress)
     provider = "cuda" if device == "cuda" else "cpu"
+    if on_progress:
+        on_progress(None, "Loading Parakeet model")
     rec = sherpa.OfflineRecognizer.from_transducer(
         encoder=os.path.join(d, "encoder.int8.onnx"),
         decoder=os.path.join(d, "decoder.int8.onnx"),
@@ -122,5 +124,8 @@ def load_sherpa_onnx(model_name, device, *, num_threads=4, log=print, on_progres
         feature_dim=80,
         decoding_method="greedy_search",
         provider=provider,
+        # Parakeet is a NeMo TDT transducer. Without this the loader defaults to the
+        # zipformer/icefall path and dies with "'vocab_size' does not exist".
+        model_type="nemo_transducer",
     )
     return SherpaOnnxBackend(rec)

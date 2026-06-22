@@ -11,12 +11,11 @@ build/
 dist/
 *.manifest
 
-# .NET / WinUI build output (native-ui)
+# .NET / WinUI build output
 [Bb]in/
 [Oo]bj/
 dist-native/
 
-# Machine-specific MCP/tooling config (absolute local paths)
 .mcp.json
 
 # User-writable runtime data
@@ -25,8 +24,10 @@ cache/
 cuda/
 pkgs/
 whispercpp/
+sherpa/
+models/
 
-# Reverse-engineering dev kit + auxiliary node projects (not part of the app; large)
+# Reverse-engineering dev kit
 tools/
 mcp-bd-bridge/
 transcriber-bot/
@@ -38,3 +39,6 @@ node_modules/
 Thumbs.db
 .idea/
 .vscode/
+
+# local agent notes
+AGENTS.md

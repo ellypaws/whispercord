@@ -9,32 +9,44 @@ import os, sys, json, glob, zipfile, tempfile, urllib.request
 
 import paths
 
+# faster-whisper / CTranslate2 needs just cuBLAS + cuDNN.
 PKGS = ["nvidia-cublas-cu12", "nvidia-cudnn-cu12"]
+# onnxruntime's CUDA execution provider (the sherpa-onnx Parakeet path) links cuFFT and the
+# CUDA runtime on top of cuBLAS + cuDNN. cuBLAS already ships cublasLt; cuRAND is not needed.
+ORT_PKGS = ["nvidia-cufft-cu12", "nvidia-cuda-runtime-cu12"]
 
 
 def cuda_dir():
-    d = paths.data("cuda")
+    d = paths.cache("cuda")
     os.makedirs(d, exist_ok=True)
     return d
 
 
-def _scan_dirs():
+def dll_dirs():
+    """Every folder that may hold the CUDA DLLs, across source venv, onedir, and onefile."""
     dirs = [cuda_dir()]
     dirs += glob.glob(os.path.join(sys.prefix, "Lib", "site-packages", "nvidia", "*", "bin"))
     base = getattr(sys, "_MEIPASS", None)
     if base:
         dirs += glob.glob(os.path.join(base, "nvidia", "*", "bin"))
-    return dirs
+    return [d for d in dict.fromkeys(dirs) if os.path.isdir(d)]
+
+
+def _scan_dirs():
+    return dll_dirs()
+
+
+def _have(pattern):
+    return any(glob.glob(os.path.join(d, pattern)) for d in dll_dirs())
 
 
 def cuda_present():
-    have_blas = have_dnn = False
-    for d in _scan_dirs():
-        if glob.glob(os.path.join(d, "cublas64*.dll")):
-            have_blas = True
-        if glob.glob(os.path.join(d, "cudnn*.dll")):
-            have_dnn = True
-    return have_blas and have_dnn
+    return _have("cublas64*.dll") and _have("cudnn*.dll")
+
+
+def ort_cuda_present():
+    """cuBLAS + cuDNN plus the extra libs onnxruntime's CUDA provider needs."""
+    return cuda_present() and _have("cufft64*.dll") and _have("cudart64*.dll")
 
 
 def nvidia_gpu_present():
@@ -78,14 +90,11 @@ def _download(url, dest, log, on_progress=None):
                         last_log = pct; log("[cuda]   %d%% (%d/%d MB)" % (pct, got >> 20, total >> 20))
 
 
-def ensure_cuda(log=print, on_progress=None):
-    """Download + extract the CUDA DLLs if missing. Returns True when usable.
-    on_progress(pct, label) is called during download for a first-run progress UI."""
-    if cuda_present():
-        return True
+def _install_pkgs(pkgs, log, on_progress=None):
+    """Download each wheel and extract its bin/*.dll flat into cuda_dir()."""
     dest = cuda_dir()
-    n = len(PKGS)
-    for i, pkg in enumerate(PKGS):
+    n = len(pkgs)
+    for i, pkg in enumerate(pkgs):
         url, fn = _wheel_url(pkg)
         label = "Downloading GPU runtime %d/%d (%s)" % (i + 1, n, pkg)
         if on_progress:
@@ -95,7 +104,8 @@ def ensure_cuda(log=print, on_progress=None):
         _download(url, tmp, log,
                   on_progress=(lambda got, total: on_progress(got * 100 // total, label)) if on_progress else None)
         if on_progress:
-            on_progress(100, "Extracting GPU runtime %d/%d" % (i + 1, n))
+            # Indeterminate so the bar keeps moving while the DLLs unzip, not stuck at 100%.
+            on_progress(None, "Extracting GPU runtime %d/%d (%s)" % (i + 1, n, pkg))
         log("[cuda] extracting %s ..." % fn)
         with zipfile.ZipFile(tmp) as z:
             for member in z.namelist():
@@ -108,7 +118,32 @@ def ensure_cuda(log=print, on_progress=None):
         except Exception:
             pass
     log("[cuda] GPU runtime ready in %s" % dest)
+
+
+def ensure_cuda(log=print, on_progress=None):
+    """Download + extract the cuBLAS/cuDNN DLLs if missing. Returns True when usable.
+    on_progress(pct, label) is called during download for a first-run progress UI."""
+    if cuda_present():
+        return True
+    _install_pkgs(PKGS, log, on_progress=on_progress)
     return cuda_present()
+
+
+def ensure_cuda_ort(log=print, on_progress=None):
+    """Ensure every CUDA lib onnxruntime's CUDA provider needs (cuBLAS, cuDNN, cuFFT, cudart).
+    Downloads only the wheels whose DLLs are missing. Returns True when usable."""
+    if ort_cuda_present():
+        return True
+    need = []
+    if not cuda_present():
+        need += PKGS
+    if not _have("cufft64*.dll"):
+        need.append("nvidia-cufft-cu12")
+    if not _have("cudart64*.dll"):
+        need.append("nvidia-cuda-runtime-cu12")
+    if need:
+        _install_pkgs(need, log, on_progress=on_progress)
+    return ort_cuda_present()
 
 
 if __name__ == "__main__":

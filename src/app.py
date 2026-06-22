@@ -218,6 +218,10 @@ class Api:
     def get_log(self):
         return "\n".join(self.engine.log)
 
+    def clear_log(self):
+        self.engine.log.clear()
+        return True
+
     def get_progress(self):
         return self.engine.progress
 

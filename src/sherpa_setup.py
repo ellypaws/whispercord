@@ -41,7 +41,7 @@ MODEL_ARCHIVES = {
 
 
 def _root():
-    d = paths.data("sherpa")
+    d = paths.cache("sherpa")
     os.makedirs(d, exist_ok=True)
     return d
 
@@ -70,11 +70,17 @@ def _add_dll_dirs(root):
 
 
 def _add_cuda_dlls():
+    # onnxruntime loads its CUDA provider DLL itself; the provider's transitive deps
+    # (cublasLt, cudnn, cufft, cudart) must be on PATH, not merely add_dll_directory'd.
+    # Put every candidate CUDA folder on PATH so it works from source venv and frozen alike.
     try:
         import cuda_setup
-        d = cuda_setup.cuda_dir()
-        os.add_dll_directory(d)
-        os.environ["PATH"] = d + os.pathsep + os.environ.get("PATH", "")
+        for d in cuda_setup.dll_dirs():
+            try:
+                os.add_dll_directory(d)
+            except Exception:
+                pass
+            os.environ["PATH"] = d + os.pathsep + os.environ.get("PATH", "")
     except Exception:
         pass
 
@@ -173,7 +179,8 @@ def _download_wheel(url, fn, dest, label, log, on_progress=None):
     _download(url, tmp, log,
               on_progress=(lambda got, total: on_progress(got * 100 // total, label)) if on_progress else None)
     if on_progress:
-        on_progress(100, "Installing Parakeet runtime")
+        # Indeterminate (pct=None) so the bar animates during extraction instead of sitting at 100%.
+        on_progress(None, "Extracting %s" % label[len("Downloading "):] if label.startswith("Downloading ") else "Extracting Parakeet runtime")
     log("[sherpa] extracting %s ..." % fn)
     _safe_extract_zip(tmp, dest)
     try:
@@ -205,9 +212,8 @@ def ensure_runtime(device, log=print, on_progress=None):
 
     if device == "cuda":
         try:
-            from cuda_setup import ensure_cuda, cuda_present
-            if not cuda_present():
-                ensure_cuda(log, on_progress=on_progress)
+            from cuda_setup import ensure_cuda_ort
+            ensure_cuda_ort(log, on_progress=on_progress)
             _add_cuda_dlls()
         except Exception as e:
             raise RuntimeError("CUDA runtime setup failed: %s" % e)
@@ -260,6 +266,8 @@ def _download_archive(urls, archive, dest, log, on_progress=None):
             log("[sherpa] downloading %s ..." % archive)
             _download(url, tmp, log,
                       on_progress=(lambda got, total: on_progress(got * 100 // total, label)) if on_progress else None)
+            if on_progress:
+                on_progress(None, "Extracting Parakeet model")
             log("[sherpa] extracting %s ..." % archive)
             _safe_extract_tar(tmp, dest)
             return
