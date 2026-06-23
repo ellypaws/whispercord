@@ -115,18 +115,18 @@ run.bat        :: launches the desktop app
 (`%APPDATA%\whispercord` on Windows, `~/.local/share/whispercord` on Linux). Everything is
 editable from **Settings**, but here are the keys:
 
-| Key | Meaning |
-|---|---|
-| `whisper_model` | `tiny` / `base` / `small` / `medium` / `large-v3`. Bigger = more accurate, slower. |
-| `language` | Force a language (e.g. `en`), or leave empty to auto-detect. |
-| `inject_overlay` | Show subtitles inside Discord — global or per-client. |
-| `relay_port` | Local WebSocket port (default 8765). |
-| `cdp_ports` | Debug ports used for name resolution: PTB 9223, Discord 9224, Canary 9225, Dev 9226. |
-| `gating.min_rms_dbfs` | Below this loudness, audio is skipped. Raise toward −45 to gate harder. |
-| `gating.vad` / `gating.drop_phrases` | Voice-activity detection and the silence-hallucination blocklist. |
-| `alerts.keywords` | Words that trigger a highlight and beep. |
-| `ui.newest_at_top` | Newest line at the top instead of the bottom. |
-| `self_transcribe.*` | Transcribe your own mic (with mute / voice-detection gating, per client). |
+| Key                                  | Meaning                                                                              |
+|--------------------------------------|--------------------------------------------------------------------------------------|
+| `whisper_model`                      | `tiny` / `base` / `small` / `medium` / `large-v3`. Bigger = more accurate, slower.   |
+| `language`                           | Force a language (e.g. `en`), or leave empty to auto-detect.                         |
+| `inject_overlay`                     | Show subtitles inside Discord — global or per-client.                                |
+| `relay_port`                         | Local WebSocket port (default 8765).                                                 |
+| `cdp_ports`                          | Debug ports used for name resolution: PTB 9223, Discord 9224, Canary 9225, Dev 9226. |
+| `gating.min_rms_dbfs`                | Below this loudness, audio is skipped. Raise toward −45 to gate harder.              |
+| `gating.vad` / `gating.drop_phrases` | Voice-activity detection and the silence-hallucination blocklist.                    |
+| `alerts.keywords`                    | Words that trigger a highlight and beep.                                             |
+| `ui.newest_at_top`                   | Newest line at the top instead of the bottom.                                        |
+| `self_transcribe.*`                  | Transcribe your own mic (with mute / voice-detection gating, per client).            |
 
 > [!TIP]
 > Environment overrides: `WHISPER_MODEL`, `RELAY_PORT`, `CDP_PORTS`, `VT_INJECT_OVERLAY=0`.
@@ -144,12 +144,12 @@ runs the [build workflow](.github/workflows/release.yml) and publishes a release
 
 ## How it works
 
-| Stage | What happens |
-|---|---|
-| **Capture** | Reads each remote speaker's audio directly from the Discord desktop client — the separate per-user streams it normally mixes into one. The lookup is resolved at runtime, so it keeps working across Discord updates. |
-| **Transcribe** | Each speaker's 16 kHz stream goes to [faster-whisper](https://github.com/SYSTRAN/faster-whisper) on your GPU, split into utterances with live partials and gated against silence hallucinations. |
-| **Identify** | A local connection to the Discord client resolves who is speaking and their display name + avatar, then matches each audio stream to a person — across multiple clients at once, tracked separately so they never cross over. |
-| **Display** | A local WebSocket feeds both the desktop app (one pane per client) and the in-Discord subtitle overlay. |
+| Stage          | What happens                                                                                                                                                                                                                  |
+|----------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| **Capture**    | Reads each remote speaker's audio directly from the Discord desktop client — the separate per-user streams it normally mixes into one. The lookup is resolved at runtime, so it keeps working across Discord updates.         |
+| **Transcribe** | Each speaker's 16 kHz stream goes to [faster-whisper](https://github.com/SYSTRAN/faster-whisper) on your GPU, split into utterances with live partials and gated against silence hallucinations.                              |
+| **Identify**   | A local connection to the Discord client resolves who is speaking and their display name + avatar, then matches each audio stream to a person — across multiple clients at once, tracked separately so they never cross over. |
+| **Display**    | A local WebSocket feeds both the desktop app (one pane per client) and the in-Discord subtitle overlay.                                                                                                                       |
 
 ## Troubleshooting
 
