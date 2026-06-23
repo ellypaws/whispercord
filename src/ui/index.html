@@ -176,10 +176,18 @@
   .tline { display:flex; gap:8px; align-items:flex-start; }
   .tline img { width:28px; height:28px; border-radius:50%; flex:0 0 28px; background:var(--panel2); }
   .tline .body { flex:1; }
-  .tline .who { font-weight:600; font-size:12px; }
+  .tline .who { font-weight:600; font-size:12px; display:inline-flex; align-items:center; }
   .tline .who small { color:var(--mut); font-weight:400; margin-left:6px; }
   .tline .txt { color:var(--txt); }
   .tline.interim .txt { color:var(--mut); font-style:italic; }
+  .tline .replay { display:inline-flex; align-items:center; margin-left:6px; padding:0; border:0; background:none; color:var(--mut); cursor:pointer; line-height:0; opacity:0; transition:opacity .1s, color .1s; }
+  .tline:hover .replay { opacity:.55; }
+  .tline .replay:hover { opacity:1; color:var(--accent); }
+  .tline .replay .lu { width:14px; height:14px; }
+  .tline .replay.loading, .tline .replay.gone { opacity:1; }
+  .tline .replay.loading { color:var(--mut); animation:vtpulse 1s ease-in-out infinite; }
+  .tline .replay.gone { color:var(--mut); cursor:default; }
+  @keyframes vtpulse { 50% { opacity:.2; } }
   .empty { color:var(--mut); text-align:center; padding:30px; }
   .savebar { display:flex; gap:8px; align-items:center; }
   .saved { color:var(--mut); font-size:12px; }
@@ -511,6 +519,8 @@
         <label class="switch"><input type="checkbox" id="cap_screen" /><span class="sl"></span></label></div>
       <div class="row"><label>Transcribe sound events</label>
         <label class="switch"><input type="checkbox" id="transcribe_sounds" /><span class="sl"></span></label></div>
+      <div class="row"><label>Save replay clips</label>
+        <label class="switch"><input type="checkbox" id="save_clips" /><span class="sl"></span></label></div>
       <div class="hint" id="engine_note"></div>
       <div class="hint" id="gpuhint"></div>
     </div>

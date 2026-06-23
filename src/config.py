@@ -12,6 +12,7 @@ DEFAULTS = {
     "compute_type": "float16",          # float16 (gpu) | int8_float16 | int8 (cpu)
     "num_threads": 0,                   # CPU worker threads for the model (0 = auto / library default)
     "transcribe_sounds": True,          # keep emitted non-speech events like [laughs] / ♪ music ♪
+    "save_clips": False,                # keep finalized-utterance audio in RAM for one-click UI replay
     "inject_overlay": True,             # also show subtitles inside Discord (via CDP)
     "relay_port": 8765,
     "cdp_port": 9223,                   # back-compat single port

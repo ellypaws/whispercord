@@ -814,6 +814,7 @@ function fillForm(c) {
   $("whisper_model").value = c.whisper_model;
   $("parakeet_model").value = c.parakeet_model || PARAKEET_MODEL_DEFAULT;
   $("transcribe_sounds").checked = c.transcribe_sounds !== false;
+  $("save_clips").checked = c.save_clips === true;
   $("cap_screen").checked = (c.capture || {}).screenshare !== false;
   const g = c.gating || {};
   $("g_dbfs").value = g.min_rms_dbfs ?? -50;
@@ -886,6 +887,7 @@ function readForm() {
     whisper_model: $("whisper_model").value,
     parakeet_model: $("parakeet_model").value || PARAKEET_MODEL_DEFAULT,
     transcribe_sounds: $("transcribe_sounds").checked,
+    save_clips: $("save_clips").checked,
     voice_events: $("ui_events").checked,
     uncensor: $("g_uncensor").checked,
     capture: Object.assign({}, CFG.capture, {
@@ -1406,6 +1408,7 @@ const LIVE_FIELDS = new Set([
   "ui_events",                                            // show voice events (engine emits live)
   "cap_screen",                                            // transcribe stream audio
   "transcribe_sounds",                                     // backend suppressors + text cleanup
+  "save_clips",                                            // keep utterance audio for replay (engine live)
   "self_en", "self_unmute", "self_vad", "self_ns", "self_device",  // own-voice (incl. live device switch)
   "g_dbfs", "g_vad", "g_reqspeak", "g_drop",               // silence gating
   "g_grace", "g_nospeech", "g_logprob", "g_stale", "adv_scrdetect",  // fine tuning mirrored by apply_live_config
@@ -1699,8 +1702,33 @@ function connectRelay() {
       if (p) renderColumnRoster(p);
     } else if (m.type === "selfIdentity") {
       onSelfIdentity(m.names || []);
+    } else if (m.type === "clip") {
+      const cb = clipWaiters[m.clipId]; delete clipWaiters[m.clipId];
+      if (cb) cb(m.wav ? wavUrl(m.wav) : null);
     }
   };
+}
+
+// ---- replay clips: request a finalized line's audio over the relay, then play it ----
+const clipWaiters = {};      // clipId -> callback(objectUrl|null), resolved by the "clip" message
+const clipCache = {};        // clipId -> object URL (so a second replay doesn't re-fetch)
+function wavUrl(b64) {
+  const bin = atob(b64), buf = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+  return URL.createObjectURL(new Blob([buf], { type: "audio/wav" }));
+}
+function playClip(clipId, btn) {
+  if (!clipId) return;
+  if (clipCache[clipId]) { new Audio(clipCache[clipId]).play().catch(() => {}); return; }
+  if (!relay || relay.readyState !== 1) return;
+  if (btn) btn.classList.add("loading");
+  clipWaiters[clipId] = (url) => {
+    if (btn) btn.classList.remove("loading");
+    if (!url) { if (btn) { btn.classList.add("gone"); btn.title = "Clip no longer available"; } return; }
+    clipCache[clipId] = url;
+    new Audio(url).play().catch(() => {});
+  };
+  try { relay.send(JSON.stringify({ type: "getClip", clipId })); } catch (e) {}
 }
 
 // remember each live source's current identity so the Speakers list + pickers can show/fix it
@@ -1897,6 +1925,13 @@ function transcriptLine(item, p) {
   const text = item.text || (item.isFinal ? "" : "...");
   txEl.dataset.text = text;
   renderLineText(txEl, text);
+  if (item.isFinal && item.clipId) {               // replay the exact audio behind this line
+    const rb = document.createElement("button");
+    rb.className = "replay"; rb.type = "button"; rb.title = "Replay this clip";
+    rb.innerHTML = icon("volume-2");
+    rb.onclick = (e) => { e.stopPropagation(); playClip(item.clipId, rb); };
+    line.querySelector(".who").appendChild(rb);
+  }
   return line;
 }
 function eventLine(item, p) {
@@ -2027,7 +2062,7 @@ function renderTranscript(m) {
     item = {
       type: "transcript", seq: ++itemSeq, userId: m.userId, name: m.name, avatar: m.avatar,
       text: "", isFinal: false, client: m.client, kind: m.kind || "voice", ts: m.ts || Date.now(),
-      resolved: m.resolved, locked: m.locked
+      resolved: m.resolved, locked: m.locked, clipId: null
     };
     p.active[m.userId] = item;
   }
@@ -2040,6 +2075,7 @@ function renderTranscript(m) {
   item.ts = m.ts || item.ts || Date.now();
   item.resolved = m.resolved !== undefined ? m.resolved : item.resolved;
   item.locked = m.locked !== undefined ? m.locked : item.locked;
+  if (m.clipId) item.clipId = m.clipId;            // audio behind this line (only set on final when save_clips on)
   if (m.isFinal) {
     delete p.active[m.userId];
     if (m.text) { p.items.push(item); p.n++; }
@@ -2267,6 +2303,7 @@ const HELP = {
   adv_lang: "**Language.** `Auto-detect` lets Whisper guess per utterance. Pin a language to stop it switching mid-call and to speed things up slightly. Parakeet always uses auto language mode.",
   cap_screen: "**Transcribe stream audio.** Include Go Live / screenshare audio (game, music, video) in transcription. Off = only people's microphones. Applies live, no restart.",
   transcribe_sounds: "**Transcribe sound events.** Keep emitted non-speech captions like `[laughs]`, `(applause)`, or `♪ music ♪`. Off strips those markers and treats sound-only output like silence. Applies live.",
+  save_clips: "**Save replay clips.** Keep the short audio behind each finished line so you can replay it with the speaker button when a transcript is unclear. Audio is held only in memory (the last 200 lines, dropped oldest) and never written to disk. Off by default. Applies live.",
   self_en: "**Transcribe your own microphone** in addition to everyone else's audio. Uses your mic, gated by Discord's own per-client mute/VAD state below.",
   self_unmute: "Only capture your mic while you are **unmuted in Discord** for that client. Off = transcribe even when self-muted.",
   self_vad: "Only capture your mic when **Discord's voice activity** says you're speaking for that client - avoids transcribing background room noise.",

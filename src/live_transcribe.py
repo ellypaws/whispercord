@@ -66,6 +66,7 @@ DEVICE = CFG.get("device", "cuda")
 COMPUTE = CFG.get("compute_type", "float16")
 NUM_THREADS = int(CFG.get("num_threads", 0) or 0)   # 0 = auto / library default
 TRANSCRIBE_SOUNDS = bool(CFG.get("transcribe_sounds", True))
+SAVE_CLIPS = bool(CFG.get("save_clips", False))   # keep finalized-utterance audio for UI replay (opt-in)
 RELAY_PORT = CFG["relay_port"]
 SILENCE_S = CFG["silence_s"]        # gap that ends an utterance
 MIN_UTT_S = CFG["min_utt_s"]
@@ -309,7 +310,7 @@ def apply_live_config(cfg):
     relay-port are deliberately NOT touched here — those still require a restart."""
     global CAP, CAP_VOICE, CAP_SCREEN, SCREEN_DETECT_S, MAX_STALE_S, SCREEN_LABEL
     global GATE, GATE_DBFS, USE_VAD, NO_SPEECH, MIN_LOGPROB, DROP, REQUIRE_SPEAKING, SPK_GRACE_S
-    global LANGUAGE, BEAM, TRANSCRIBE_SOUNDS, SELF, UNCENSOR, _UNCENSOR_RULES
+    global LANGUAGE, BEAM, TRANSCRIBE_SOUNDS, SELF, UNCENSOR, _UNCENSOR_RULES, SAVE_CLIPS
     try:
         if "voice_events" in cfg:
             CFG["voice_events"] = bool(cfg["voice_events"])   # mapping_thread reads this each pass
@@ -335,6 +336,8 @@ def apply_live_config(cfg):
         BEAM = int(cfg.get("beam_size", 1))
         if "transcribe_sounds" in cfg:
             TRANSCRIBE_SOUNDS = bool(cfg.get("transcribe_sounds", True))
+        if "save_clips" in cfg:
+            SAVE_CLIPS = bool(cfg.get("save_clips", False))
         SELF = cfg.get("self_transcribe") or SELF
         print("[cfg] live settings applied (no restart)")
     except Exception as e:
@@ -548,6 +551,41 @@ def self_capture_thread():
         time.sleep(0.5)
 
 
+# ---------------- replayable clips (opt-in, in-RAM ring buffer) ----------------
+# When save_clips is on, the raw audio of each finalized utterance is kept here so the UI can
+# replay it ("the subtitle doesn't make sense, let me hear it"). In-RAM only - nothing touches
+# disk - and bounded: the oldest clip is dropped past CLIP_MAX, matching the keep-last-N UX.
+CLIP_MAX = 200
+_clips = collections.OrderedDict()      # clipId -> int16 PCM bytes (16 kHz mono)
+_clips_lock = threading.Lock()
+_clip_seq = 0
+
+def store_clip(b):
+    global _clip_seq
+    data = bytes(b)
+    if not data:
+        return None
+    with _clips_lock:
+        _clip_seq += 1
+        cid = str(_clip_seq)
+        _clips[cid] = data
+        while len(_clips) > CLIP_MAX:
+            _clips.popitem(last=False)
+    return cid
+
+def clip_wav(cid):
+    """16 kHz mono 16-bit WAV (header + PCM) for a stored clip, or None if evicted/unknown."""
+    with _clips_lock:
+        pcm = _clips.get(cid)
+    if pcm is None:
+        return None
+    import struct
+    n, sr = len(pcm), 16000
+    return (b"RIFF" + struct.pack("<I", 36 + n) + b"WAVEfmt " +
+            struct.pack("<IHHIIHH", 16, 1, 1, sr, sr * 2, 2, 16) +
+            b"data" + struct.pack("<I", n) + pcm)
+
+
 # ---------------- relay (WebSocket) ----------------
 clients = set()
 relay_loop = None
@@ -573,6 +611,15 @@ def start_relay():
                     apply_live_config(obj.get("config") or {})    # live-apply restart-free settings
                 elif obj.get("type") == "reinjectOverlay":
                     reinject_event.set()                          # re-inject overlays without an engine restart
+                elif obj.get("type") == "getClip":                # lazily serve a replay clip to the asker only
+                    cid = str(obj.get("clipId") or "")
+                    wav = clip_wav(cid)
+                    if wav is not None:
+                        import base64
+                        await ws.send(json.dumps({"type": "clip", "clipId": cid,
+                                                  "wav": base64.b64encode(wav).decode("ascii")}))
+                    else:
+                        await ws.send(json.dumps({"type": "clip", "clipId": cid, "wav": None}))
                 elif obj.get("type") == "assign":                 # manual speaker (re)assignment, applied by mapping_thread
                     pending_assigns.append({k: obj.get(k) for k in ("src", "userId", "name", "clear")})
         except Exception:
@@ -1276,7 +1323,7 @@ def main():
             out.append(txt)
         return " ".join(out).strip()
 
-    def emit(src, text, final):
+    def emit(src, text, final, clip_id=None):
         u = src2user.get(src)
         name = display_name(src, u["name"] if u else None)
         avatar = u["avatar"] if u else None
@@ -1288,7 +1335,7 @@ def main():
         broadcast({"type": "transcript", "userId": src, "name": name, "avatar": avatar,
                    "text": text, "isFinal": final, "client": src_client.get(src),
                    "kind": kind_of(src), "ts": int(time.time() * 1000),
-                   "resolved": bool(u), "locked": src in manual_assign})
+                   "resolved": bool(u), "locked": src in manual_assign, "clipId": clip_id})
 
     def keepalive(src):
         # tell the overlay this speaker is still active even when a chunk transcribed to nothing,
@@ -1372,9 +1419,12 @@ def main():
             elif kind == "final":
                 denoise = src.startswith("self:") and bool(SELF.get("noise_suppression", True))
                 t = transcribe(b, denoise=denoise)
+                clip_id = None
                 if t:
                     print("  [%s] %s" % (display_name(src, (src2user.get(src) or {}).get("name")), t))
-                emit(src, t, True)
+                    if SAVE_CLIPS:
+                        clip_id = store_clip(b)        # keep the audio behind this line for UI replay
+                emit(src, t, True, clip_id)
             elif kind == "stale":
                 # Whisper got stuck; b carries the last partial. Finalize it (or an empty final to
                 # clear the overlay) WITHOUT re-running the model on the same wedged audio.
