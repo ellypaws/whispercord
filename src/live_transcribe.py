@@ -608,11 +608,13 @@ function install(rva) {
       if (r.toInt32() !== 0) return;                      // kNormal only
       const f = this.frame;
       const spc = f.add(0x18).readU32(), ch = f.add(0x28).readU32();
-      const base = f.add(0x50);                            // data_
+      const base = f.add(0x50);                            // data_ (interleaved S16, 48k)
       const outN = Math.floor(spc / 3);                   // 48k -> 16k
+      const inV = new Int16Array(base.readByteArray(spc * ch * 2));  // one bridge crossing/frame
       const buf = new ArrayBuffer(outN * 2);
       const view = new Int16Array(buf);
-      for (let i = 0; i < outN; i++) view[i] = base.add(i * 3 * ch * 2).readS16();  // L channel
+      const stride = 3 * ch;                               // every 3rd 48k sample, L channel
+      for (let i = 0; i < outN; i++) view[i] = inV[i * stride];
       LAST_RECV = this.src;                                // BFS root for the native roster scan
       // tag by client (multi-client safe) and by ssrc (native per-stream identity)
       send({ src: PID + ':' + this.src.toString(), client: CLIENT, ssrc: readSsrc(this.src) }, buf);
@@ -1017,7 +1019,7 @@ def _client_from_url(url):
 
 
 def mapping_thread():
-    from cdp import CDP, speaking_users, user_info, self_state, voice_states, ssrc_map, cleanup_overlay
+    from cdp import CDP, poll_state, user_info, self_state, voice_states, ssrc_map, cleanup_overlay
     from launch import CLIENTS
     port2client = {port: exe.lower() for _, (exe, port) in CLIENTS.items()}  # 9223 -> 'discordptb.exe'
 
@@ -1384,8 +1386,10 @@ def mapping_thread():
         # to a speaker reported by client X's own CDP. No cross-client leakage.
         for port, st0 in (list(conns.items()) if CDP_ENABLED else []):
             client, c = st0["client"], st0["cdp"]
+            # one round-trip for both hot signals (speaking excludes self; self() is merged below)
             try:
-                speaking = set(speaking_users(c))
+                ps = poll_state(c) or {}
+                speaking = set(ps.get("s") or [])
                 st0["fails"] = 0
             except Exception:
                 st0["fails"] += 1
@@ -1398,10 +1402,7 @@ def mapping_thread():
                     print("[map] CDP on port %d dropped; will retry" % port)
                 continue
 
-            try:
-                sst = self_state(c)
-            except Exception:
-                sst = None
+            sst = ps.get("m")
 
             # record who Discord says is speaking so the transcription loop can trust the
             # indicator (and note this client gives fresh speaking data, even when nobody speaks).

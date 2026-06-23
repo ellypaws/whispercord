@@ -99,17 +99,26 @@ window.__vtr = (() => {
     return window.__vtReq;
   };
   const getStore = (name) => {
+    // Resolved stores never move for the life of the renderer, so cache them. The fallback path
+    // below scans the ENTIRE webpack module map per lookup (7 stores x every poll); memoizing the
+    // hits collapses that to a one-time cost. Cold clients (no webpack) early-return null cheaply.
+    const sc = (window.__vtSC = window.__vtSC || {});
+    if (sc[name]) return sc[name];
+    let found = null;
     if (window.BdApi && BdApi.Webpack && BdApi.Webpack.getStore) {
-      try { const s = BdApi.Webpack.getStore(name); if (s) return s; } catch (e) {}
+      try { const s = BdApi.Webpack.getStore(name); if (s) found = s; } catch (e) {}
     }
-    const req = getReq(); const c = req && req.c; if (!c) return null;
-    for (const k in c) {
-      let e; try { e = c[k] && c[k].exports; } catch (er) { continue; }
-      if (!e) continue;
-      try { if (e.getName && e.getName() === name) return e; } catch (er) {}
-      try { if (e.default && e.default.getName && e.default.getName() === name) return e.default; } catch (er) {}
+    if (!found) {
+      const req = getReq(); const c = req && req.c;
+      if (c) for (const k in c) {
+        let e; try { e = c[k] && c[k].exports; } catch (er) { continue; }
+        if (!e) continue;
+        try { if (e.getName && e.getName() === name) { found = e; break; } } catch (er) {}
+        try { if (e.default && e.default.getName && e.default.getName() === name) { found = e.default; break; } } catch (er) {}
+      }
     }
-    return null;
+    if (found) sc[name] = found;
+    return found;
   };
   const stores = () => ({
     US: getStore("UserStore"), VSS: getStore("VoiceStateStore"), RCS: getStore("RTCConnectionStore"),
@@ -522,23 +531,38 @@ window.__vtr = (() => {
 })();
 """
 
+# Inject the __vtr bootstrap only when it's missing (fresh renderer or after a reload). Re-running
+# the whole IIFE on every poll - rebuilding all closures and re-pushing the webpack chunk - was the
+# bulk of the per-tick renderer cost; the guard ships the text but the engine skips it once __vtr
+# exists, so each call is self-healing without paying for re-execution.
+_ENSURE = "if(!window.__vtr){\n" + _BOOT + "\n}\n"
+
+def poll_state(cdp, vs=False, ssrc=False):
+    """Per-tick hot path in ONE round-trip: speaking + self, plus optional voiceStates/ssrcMap.
+    Entering the renderer once instead of 2-4 times per tick cuts blocking and main-thread tasks.
+    Returns {'s': [...], 'm': {...}, 'v': {...}?, 'r': {...}?} or None on evaluate failure."""
+    parts = ["s:window.__vtr.speaking()", "m:window.__vtr.self()"]
+    if vs:   parts.append("v:window.__vtr.voiceStates()")
+    if ssrc: parts.append("r:window.__vtr.ssrcMap()")
+    return cdp.evaluate(_ENSURE + "({" + ",".join(parts) + "})")
+
 def speaking_users(cdp):
-    return cdp.evaluate(_BOOT + "window.__vtr.speaking()") or []
+    return cdp.evaluate(_ENSURE + "window.__vtr.speaking()") or []
 
 def user_info(cdp, uid):
-    return cdp.evaluate(_BOOT + "window.__vtr.user(" + json.dumps(uid) + ")")
+    return cdp.evaluate(_ENSURE + "window.__vtr.user(" + json.dumps(uid) + ")")
 
 def self_state(cdp):
-    return cdp.evaluate(_BOOT + "window.__vtr.self()")
+    return cdp.evaluate(_ENSURE + "window.__vtr.self()")
 
 def voice_states(cdp):
-    return cdp.evaluate(_BOOT + "window.__vtr.voiceStates()")
+    return cdp.evaluate(_ENSURE + "window.__vtr.voiceStates()")
 
 def ssrc_map(cdp):
     """{'map': {ssrc(str): {userId, kind}}, 'audio': [ssrc,...]} or None.
     `kind` is 'voice' | 'video' | 'stream'. `audio` lists audio ssrcs for the
     native offset auto-locator. Keys come back stringified from JSON."""
-    return cdp.evaluate(_BOOT + "window.__vtr.ssrcMap()")
+    return cdp.evaluate(_ENSURE + "window.__vtr.ssrcMap()")
 
 
 OVERLAY_CLEANUP_JS = r"""
