@@ -175,18 +175,33 @@ window.__vtr = (() => {
                username: me.username || null, globalName: me.globalName || null, nick: nick || null };
     } catch (e) { return null; }
   };
+  // Resolve the server nickname for `uid` from the guild of the channel THIS client is connected to.
+  // Returns { nick, gAvatar, guildId }; nick is null when the member record isn't loaded yet.
+  const wpNick = (s, uid) => {
+    let guildId = null, nick = null, gAvatar = null;
+    try {
+      const chId = s.RCS && s.RCS.getChannelId && s.RCS.getChannelId();
+      const ch = chId && s.CS && s.CS.getChannel && s.CS.getChannel(chId);
+      guildId = ch && ch.guild_id;
+      if (guildId && s.GMS) {
+        if (s.GMS.getMember) { const m = s.GMS.getMember(guildId, uid); if (m) { nick = m.nick || null; gAvatar = m.avatar || null; } }
+        if (!nick && s.GMS.getNick) { try { nick = s.GMS.getNick(guildId, uid) || null; } catch (e) {} }
+      }
+    } catch (e) {}
+    return { nick: nick, gAvatar: gAvatar, guildId: guildId };
+  };
+  // Return the name COMPONENTS (nick / globalName / username) separately so the public resolver can
+  // apply the preference order across every source, rather than collapsing to one string too early
+  // (a partial UserStore record commonly has username but no globalName/nick until the profile loads).
   const wpUser = (uid) => {
     const s = stores(); if (!s.US) return null;
     try {
       const u = s.US.getUser && s.US.getUser(uid); if (!u) return null;
-      let guildId = null, nick = null, gAvatar = null;
-      try {
-        const chId = s.RCS && s.RCS.getChannelId && s.RCS.getChannelId();
-        const ch = chId && s.CS && s.CS.getChannel && s.CS.getChannel(chId);
-        guildId = ch && ch.guild_id;
-        if (guildId && s.GMS && s.GMS.getMember) { const m = s.GMS.getMember(guildId, uid); if (m) { nick = m.nick; gAvatar = m.avatar; } }
-      } catch (e) {}
-      return { userId: u.id, name: nick || u.globalName || u.username, avatar: avatarUrl(u, { avatar: gAvatar }, guildId) };
+      const n = wpNick(s, uid);
+      const globalName = u.globalName || u.global_name || null;
+      const username = u.username || null;
+      return { userId: u.id, nick: n.nick, globalName: globalName, username: username,
+               name: n.nick || globalName || username, avatar: avatarUrl(u, { avatar: n.gAvatar }, n.guildId) };
     } catch (e) { return null; }
   };
 
@@ -298,9 +313,11 @@ window.__vtr = (() => {
             const e = p.voiceStates[uid]; if (!e) continue;
             const u = e.user; if (!u || !u.id) continue;
             const vs = e.voiceState || {};
-            const nm = e.nick || (e.member && e.member.nick) || u.globalName || u.username;
+            const nick = e.nick || (e.member && e.member.nick) || null;
+            const globalName = u.globalName || u.global_name || null;
+            const nm = nick || globalName || u.username;
             const o = out[u.id] || (out[u.id] = { uid: u.id });
-            o.name = nm; o.username = u.username;
+            o.name = nm; o.username = u.username; o.nick = nick; o.globalName = globalName;
             o.channelId = cid;                 // which voice channel this person is in
             o.avatar = avatarUrl(u, e.member, guildId);
             o.selfMute = !!vs.selfMute; o.selfDeaf = !!vs.selfDeaf;
@@ -330,7 +347,11 @@ window.__vtr = (() => {
       }
       if (!u) return;
       const o = out[u.id] || (out[u.id] = { uid: u.id });
-      if (o.name === undefined) o.name = nick || u.nick || u.globalName || u.username;
+      const tnick = nick || u.nick || null;
+      const tglobal = u.globalName || u.global_name || null;
+      if (o.nick == null) o.nick = tnick;
+      if (o.globalName == null) o.globalName = tglobal;
+      if (o.name === undefined) o.name = tnick || tglobal || u.username;
       if (o.username === undefined) o.username = u.username;
       if (o.channelId == null && chId !== null) o.channelId = chId;
       if (o.avatar === undefined) o.avatar = avatarUrl(u, null, null);
@@ -482,11 +503,20 @@ window.__vtr = (() => {
     },
     ssrcMap: () => wpSsrcMap(),
     user: (uid) => {
+      // Resolve from EVERY source, then apply the preference (server nick -> global display name ->
+      // username) across all of them. wpUser alone is not enough: a partial UserStore record often
+      // carries only the username until that user's profile/member loads (i.e. their tile renders),
+      // which is why the name used to flip to the bare username "depending on where the user is".
       const w = wpUser(uid);
-      if (w) return w;
-      const r = roster();
-      if (r[uid] && r[uid].name) return { userId: uid, name: r[uid].name, avatar: r[uid].avatar };
-      return avatarScrape(uid);
+      const r = roster()[uid];
+      const nick = (w && w.nick) || (r && r.nick) || null;
+      const globalName = (w && w.globalName) || (r && r.globalName) || null;
+      const username = (w && w.username) || (r && r.username) || null;
+      const avatar = (w && w.avatar) || (r && r.avatar) || null;
+      const name = nick || globalName || username;
+      if (name) return { userId: uid, name: name, nick: nick, globalName: globalName,
+                         username: username, avatar: avatar };
+      return avatarScrape(uid);   // last resort: avatar alt text (usually the username)
     },
   };
 })();
