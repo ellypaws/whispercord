@@ -1,9 +1,9 @@
 """Downloaded-model cache management, across every engine.
 
 Three engines keep their weights in three different places:
-  * Whisper / NVIDIA+CPU (faster-whisper / CTranslate2) -> the standard Hugging Face hub cache
-  * Whisper / AMD+Intel  (whisper.cpp GGML)             -> whispercpp_setup.models_dir()
-  * Parakeet             (sherpa-onnx)                  -> sherpa_setup.models_dir()
+  * Whisper (faster-whisper / CTranslate2) -> the standard Hugging Face hub cache
+  * Whisper (whisper.cpp GGML)             -> whispercpp_setup.models_dir()
+  * Parakeet (sherpa-onnx)                 -> sherpa_setup.models_dir()
 
 For CTranslate2 we operate on the SAME HF cache faster-whisper uses (not a private folder) so
 nothing is ever re-downloaded because of this app, and switching models is free. `is_cached`
@@ -73,7 +73,7 @@ def _mb(nbytes):
 
 
 def _ct2_models():
-    """Whisper CTranslate2 models in the HF hub cache (NVIDIA / CPU)."""
+    """Whisper CTranslate2 models in the HF hub cache."""
     root = cache_dir()
     repo2name = {v: k for k, v in REPOS.items()}
     out = []
@@ -82,13 +82,13 @@ def _ct2_models():
         if "whisper" not in repo.lower():                    # ignore unrelated HF models
             continue
         name = repo2name.get(repo, repo)
-        out.append({"name": name, "kind": "ct2", "engine": "Whisper (NVIDIA / CPU)",
+        out.append({"name": name, "kind": "ct2", "engine": "Whisper (CTranslate2)",
                     "repo": repo, "size_mb": _mb(_dir_size(d)), "id": "ct2:" + name})
     return out
 
 
 def _ggml_models():
-    """Whisper.cpp GGML models (AMD / Intel GPU via Vulkan or HIP). One file per model name,
+    """Whisper.cpp GGML models for Vulkan or HIP. One file per model name,
     shared by both backends, so there is a single entry regardless of vulkan vs hip."""
     try:
         import whispercpp_setup
@@ -102,13 +102,13 @@ def _ggml_models():
             sz = os.path.getsize(p)
         except OSError:
             sz = 0
-        out.append({"name": name, "kind": "ggml", "engine": "Whisper (AMD / Intel GPU)",
+        out.append({"name": name, "kind": "ggml", "engine": "Whisper (whisper.cpp GGML)",
                     "size_mb": _mb(sz), "id": "ggml:" + name})
     return out
 
 
 def _parakeet_models():
-    """Parakeet (sherpa-onnx) model folders (NVIDIA / CPU)."""
+    """Parakeet sherpa-onnx model folders."""
     try:
         import sherpa_setup
         md = sherpa_setup.models_dir()
@@ -124,7 +124,7 @@ def _parakeet_models():
         sz = _dir_size(d)
         if sz < 1_000_000:                                   # skip empty/partial folders
             continue
-        out.append({"name": name, "kind": "parakeet", "engine": "Parakeet (NVIDIA / CPU)",
+        out.append({"name": name, "kind": "parakeet", "engine": "Parakeet (sherpa-onnx)",
                     "size_mb": _mb(sz), "id": "parakeet:" + name})
     return out
 

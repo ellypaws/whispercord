@@ -12,7 +12,7 @@ DEFAULTS = {
     "compute_type": "float16",          # float16 (gpu) | int8_float16 | int8 (cpu)
     "num_threads": 0,                   # CPU worker threads for the model (0 = auto / library default)
     "transcribe_sounds": True,          # keep emitted non-speech events like [laughs] / ♪ music ♪
-    "save_clips": False,                # keep finalized-utterance audio in RAM for one-click UI replay
+    "save_clips": False,                # show replay buttons by keeping finalized-utterance audio in RAM
     "inject_overlay": True,             # also show subtitles inside Discord (via CDP)
     "relay_port": 8765,
     "cdp_port": 9223,                   # back-compat single port
@@ -57,8 +57,7 @@ DEFAULTS = {
     ],
     "ui": {                             # desktop-wrapper display prefs
         "show_timestamps": True,
-        "timestamp_format": "clock",    # clock (HH:MM:SS) | relative (12s ago)
-        "newest_at_top": False,         # False = newest at bottom (classic); True = newest pops in on top
+        "timestamp_format": "clock",    # clock (HH:MM:SS) | relative (12s ago); show_timestamps=false disables
     },
     "self_transcribe": {                # transcribe your OWN microphone too
         "enabled": False,

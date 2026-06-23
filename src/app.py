@@ -228,6 +228,18 @@ class Api:
             })
         return out
 
+    def list_clients_quick(self):
+        import launch
+        found = launch.installed_clients()
+        return [{
+            "folder": folder,
+            "exe": info["name"].lower(),
+            "port": info["port"],
+            "live": False,
+            "running": False,
+            "detecting": True,
+        } for folder, info in found.items()]
+
     def list_input_devices(self):
         try:
             import sounddevice as sd

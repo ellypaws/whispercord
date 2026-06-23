@@ -621,9 +621,9 @@ function mdToHtml(md) {
 }
 
 // ---------- transcript direction (newest at bottom by default, flippable) ----------
-const newestTop = () => !!(CFG && CFG.ui && CFG.ui.newest_at_top);   // global default for new panels
+const newestTop = () => false;   // global ordering is deprecated; each transcript card can still flip
 const jumpLabel = (top) => "Jump to latest " + (top ? "↑" : "↓");
-const flipTitle = (top) => top ? "Newest on top - click for oldest first" : "Oldest on top - click for newest first";
+const flipTitle = (top) => top ? "Latest first - click for oldest first" : "Oldest first - click for latest first";
 function flipPanel(p) {                     // per-card direction toggle
   p.newestTop = !p.newestTop;
   if (p.jump) p.jump.textContent = jumpLabel(p.newestTop);
@@ -700,7 +700,12 @@ function overlayInfo(c) {
 }
 function renderOverlayClients() {
   const box = $("overlay_clients");
-  if (!clientList.length) { box.innerHTML = '<div class="hint">No Discord clients detected yet.</div>'; return; }
+  if (!clientList.length) {
+    box.innerHTML = clientsLoading
+      ? '<div class="hint"><span class="indet-spin"></span>Detecting Discord clients...</div>'
+      : '<div class="hint">No Discord clients detected yet.</div>';
+    return;
+  }
   box.innerHTML = "";
   for (const c of clientList) {
     const info = overlayInfo(c);
@@ -714,7 +719,12 @@ function renderOverlayClients() {
 }
 function renderToggleList(boxId, isOn, set) {
   const box = $(boxId);
-  if (!clientList.length) { box.innerHTML = '<div class="hint">No Discord clients detected yet.</div>'; return; }
+  if (!clientList.length) {
+    box.innerHTML = clientsLoading
+      ? '<div class="hint"><span class="indet-spin"></span>Detecting Discord clients...</div>'
+      : '<div class="hint">No Discord clients detected yet.</div>';
+    return;
+  }
   box.innerHTML = "";
   for (const c of clientList) {
     const row = document.createElement("div"); row.className = "toggrow";
@@ -794,7 +804,7 @@ function applyEngineConstraints(engine) {
     Array.from(dev.options).forEach((opt) => {
       const blocked = isParakeet && (opt.value === "hip" || opt.value === "vulkan");
       opt.disabled = blocked;
-      opt.title = blocked ? "AMD/Intel GPU acceleration is not available for Parakeet. Use Whisper for hip/vulkan, or Parakeet on CPU." : "";
+      opt.title = blocked ? "hip/vulkan GPU acceleration is not available for Parakeet. Use Whisper for hip/vulkan, or Parakeet on CPU." : "";
     });
   }
 
@@ -851,9 +861,7 @@ function fillForm(c) {
   $("o_logh").value = o.log_height ?? 300;
   $("ui_events").checked = c.voice_events !== false;
   const u = c.ui || {};
-  $("ui_ts").checked = !!u.show_timestamps;
-  $("ui_tsfmt").value = u.timestamp_format || "clock";
-  $("ui_newtop").checked = !!u.newest_at_top;
+  $("ui_tsfmt").value = u.show_timestamps === false ? "off" : (u.timestamp_format || "clock");
   $("adv_lang").value = c.language || "";
   $("adv_beam").value = c.beam_size ?? 1;
   $("adv_device").value = c.device || "auto";
@@ -872,16 +880,17 @@ function fillForm(c) {
   $("self_device").value = s.device == null ? "" : String(s.device);
 }
 $("g_dbfs").addEventListener("input", () => $("g_dbfs_v").textContent = $("g_dbfs").value);
-$("ui_newtop").addEventListener("change", () => {
-  if (!CFG.ui) CFG.ui = {};
-  CFG.ui.newest_at_top = $("ui_newtop").checked;   // flip live (scheduleSave persists it)
-  applyDirection();
-});
 
 function readForm() {
   const csv = (s) => s.split(",").map((x) => x.trim()).filter(Boolean);
   const num = (id, dflt) => { const v = parseFloat($(id).value); return Number.isFinite(v) ? v : dflt; };
   const ports = csv($("adv_cdp").value).map((x) => parseInt(x, 10)).filter((n) => Number.isFinite(n));
+  const tsFmt = $("ui_tsfmt").value;
+  const prevTsFmt = (CFG.ui && CFG.ui.timestamp_format && CFG.ui.timestamp_format !== "off")
+    ? CFG.ui.timestamp_format
+    : "clock";
+  const uiBase = Object.assign({}, CFG.ui);
+  delete uiBase.newest_at_top;
   return Object.assign({}, CFG, {
     asr_engine: $("asr_engine").value,
     whisper_model: $("whisper_model").value,
@@ -934,10 +943,9 @@ function readForm() {
       log_width: parseInt($("o_logw").value, 10) || 360,
       log_height: parseInt($("o_logh").value, 10) || 300,
     }),
-    ui: Object.assign({}, CFG.ui, {
-      show_timestamps: $("ui_ts").checked,
-      timestamp_format: $("ui_tsfmt").value,
-      newest_at_top: $("ui_newtop").checked,
+    ui: Object.assign(uiBase, {
+      show_timestamps: tsFmt !== "off",
+      timestamp_format: tsFmt === "off" ? prevTsFmt : tsFmt,
     }),
     self_transcribe: Object.assign({}, CFG.self_transcribe, {
       enabled: $("self_en").checked,
@@ -1392,7 +1400,10 @@ function initAutosave() {
     if (e.target.id === "adv_device") refreshGpu();
     // any of these change which downloaded model is "active"
     if (["whisper_model", "asr_engine", "parakeet_model", "adv_device"].includes(e.target.id)) refreshModels();
-    if (e.target.id === "ui_ts" || e.target.id === "ui_tsfmt") renderAllPanels();
+    if (e.target.id === "ui_tsfmt" || e.target.id === "save_clips") {
+      CFG = readForm();
+      renderAllPanels();
+    }
     scheduleSave();
     if (LIVE_FIELDS.has(e.target.id)) return;                 // applies live, no prompt
     if (OVERLAY_FIELDS.has(e.target.id)) markOverlayNeeded();  // overlay-only -> re-inject, not engine restart
@@ -1404,7 +1415,7 @@ function initAutosave() {
 // settings that apply live (UI-side, or pushed to the engine over the relay) and never restart.
 // Engine-side live fields are mirrored by apply_live_config() in live_transcribe.py.
 const LIVE_FIELDS = new Set([
-  "ui_newtop", "ui_ts", "ui_tsfmt", "a_highlight",        // wrapper-only display prefs
+  "ui_tsfmt", "a_highlight",                              // wrapper-only display prefs
   "ui_events",                                            // show voice events (engine emits live)
   "cap_screen",                                            // transcribe stream audio
   "transcribe_sounds",                                     // backend suppressors + text cleanup
@@ -1466,11 +1477,40 @@ $("updatebar-ignore").addEventListener("click", () => { $("updatebar").style.dis
 
 // ---------- clients ----------
 let clientList = [];
+let clientsLoading = false;
 let engineStatus = {};        // exe -> {hooked, cdp, streams, active, mapped} from the engine heartbeat
 let engineRunning = false;    // last known engine state (drives the "restart to apply" bar)
 const dismissedReminders = new Set();   // reminder keys the user closed this session
 
-async function refreshClients() { clientList = await API.list_clients(); renderClients(); }
+function mergeClientLists(base, incoming) {
+  const byKey = {};
+  for (const c of base || []) byKey[(c.exe || c.folder || "").toLowerCase()] = c;
+  for (const c of incoming || []) {
+    const key = (c.exe || c.folder || "").toLowerCase();
+    byKey[key] = Object.assign({}, byKey[key] || {}, c);
+  }
+  return Object.values(byKey).sort((a, b) => clientLabel(a.exe).localeCompare(clientLabel(b.exe)));
+}
+
+async function refreshClients() {
+  clientsLoading = true;
+  renderClients();
+  try {
+    if (!clientList.length && API.list_clients_quick) {
+      const quick = await API.list_clients_quick();
+      if (Array.isArray(quick) && quick.length) {
+        clientList = mergeClientLists(clientList, quick);
+        renderClients();
+      }
+    }
+    const list = await API.list_clients();
+    if (Array.isArray(list)) clientList = list;
+  } catch (e) {
+  } finally {
+    clientsLoading = false;
+    renderClients();
+  }
+}
 
 // Dismissable nudges explaining why names may show as "user 1a2b3" - a client without a connected
 // debug port can't resolve names. Only shown while the engine is running (i.e. actually capturing).
@@ -1524,7 +1564,15 @@ function renderReminders() {
 
 function renderClients() {
   const box = $("clients");
-  if (!clientList.length) { box.innerHTML = '<div class="empty">No Discord clients found.</div>'; return; }
+  if (!clientList.length) {
+    box.innerHTML = clientsLoading
+      ? '<div class="empty"><span class="indet-spin"></span>Detecting Discord clients...</div>'
+      : '<div class="empty">No Discord clients found.</div>';
+    renderOverlayClients();
+    renderToggleList("self_clients", selfFor, setSelf);
+    renderReminders();
+    return;
+  }
   box.innerHTML = "";
   for (const c of clientList) {
     const es = engineStatus[c.exe];
@@ -1539,6 +1587,9 @@ function renderClients() {
     } else if (c.live) {
       dot = "info"; label = `debug port ${c.port} ready`;
       tip = `Debug port ${c.port} open. Will attach once you Start the engine and a call is active.`;
+    } else if (c.detecting) {
+      dot = "info"; label = "checking status";
+      tip = "Checking whether this client is running and whether its debug port is open.";
     } else if (c.running) {
       dot = "warn"; label = "running - no debug port";
       tip = "Capture works but names won't resolve. Restart w/ port enables names (closes the current call).";
@@ -1553,6 +1604,8 @@ function renderClients() {
     btn.className = "sec";
     if (c.live) {                                     // debug port already connected -> nothing to do
       btn.textContent = "Ready"; btn.disabled = true;
+    } else if (c.detecting) {
+      btn.textContent = "Checking"; btn.disabled = true;
     } else {
       btn.textContent = c.running ? "Restart w/ port" : "Launch";
       if (c.running && !c.live) btn.classList.add("glow");   // CTA nudge: this is the one action that turns on names
@@ -1563,6 +1616,12 @@ function renderClients() {
       };
     }
     row.appendChild(btn);
+    box.appendChild(row);
+  }
+  if (clientsLoading) {
+    const row = document.createElement("div");
+    row.className = "clientrow loading";
+    row.innerHTML = '<span class="indet-spin"></span><span class="nm">Detecting more clients...</span>';
     box.appendChild(row);
   }
   renderOverlayClients();
@@ -1772,8 +1831,7 @@ function panelFor(client) {
   if (after) box.insertBefore(col, after); else box.appendChild(col);
   col._label = clientLabel(client);
 
-  // "pinned" = scrolled to the newest end (top when newestTop, else bottom). Direction is per-panel,
-  // seeded from the global default and flippable on the card itself.
+  // "pinned" = scrolled to the newest end. Direction is per-panel and flippable on the card itself.
   const p = { col, body, jump, cnt, client: key, label: client, rosterHead, rosterBottom, flipBtn: flip,
               newestTop: newestTop(), pinned: true, n: 0, items: [], active: {}, windowSize: HISTORY_WINDOW,
               lastAuto: 0, jt: null, collapseTimer: null };
@@ -1926,7 +1984,7 @@ function transcriptLine(item, p) {
   const text = item.text || (item.isFinal ? "" : "...");
   txEl.dataset.text = text;
   renderLineText(txEl, text);
-  if (item.isFinal && item.clipId) {               // replay the exact audio behind this line
+  if (CFG && CFG.save_clips && item.isFinal && item.clipId) {  // replay the exact audio behind this line
     const rb = document.createElement("button");
     rb.className = "replay"; rb.type = "button"; rb.title = "Replay this clip";
     rb.innerHTML = icon("volume-2");
@@ -2025,18 +2083,6 @@ function renderColumnRoster(p) {
   else { p.rosterBottom.style.display = "flex"; p.rosterHead.innerHTML = ""; }
   paintFaces(host, list, speaking, more);
 }
-// the global "Newest on top" setting resets every panel to that direction (per-card flips override until then)
-function applyDirection() {
-  const top = newestTop();
-  Object.values(panels).forEach((p) => {
-    p.newestTop = top;
-    if (p.jump) p.jump.textContent = jumpLabel(p.newestTop);
-    if (p.flipBtn) p.flipBtn.title = flipTitle(p.newestTop);
-    p.pinned = true; p.lastAuto = Date.now();
-    renderPanel(p, { forcePin: true });
-  });
-}
-
 function renderEvent(m) {
   if (CFG && CFG.voice_events === false) return;
   const p = panelFor(m.client);
@@ -2242,8 +2288,8 @@ async function boot() {
 
 // ---------- downloaded models ----------
 // Which downloaded model is the one the current config will actually load. Depends on the
-// engine, the chosen model name, and (for Whisper) the device family: cuda/cpu use CTranslate2,
-// AMD/Intel (hip/vulkan) use the GGML build of the same model.
+// engine, the chosen model name, and (for Whisper) the device backend: cuda/cpu use CTranslate2,
+// hip/vulkan use the GGML build of the same model.
 function activeModelMatcher() {
   const engine = ($("asr_engine") && $("asr_engine").value) || (CFG && CFG.asr_engine) || "whisper";
   const cfgDev = ($("adv_device") && $("adv_device").value) || (CFG && CFG.device) || "auto";
@@ -2304,7 +2350,7 @@ const HELP = {
   adv_lang: "**Language.** `Auto-detect` lets Whisper guess per utterance. Pin a language to stop it switching mid-call and to speed things up slightly. Parakeet always uses auto language mode.",
   cap_screen: "**Transcribe stream audio.** Include Go Live / screenshare audio (game, music, video) in transcription. Off = only people's microphones. Applies live, no restart.",
   transcribe_sounds: "**Transcribe sound events.** Keep emitted non-speech captions like `[laughs]`, `(applause)`, or `♪ music ♪`. Off strips those markers and treats sound-only output like silence. Applies live.",
-  save_clips: "**Save replay clips.** Keep the short audio behind each finished line so you can replay it with the speaker button when a transcript is unclear. Audio is held only in memory (the last 200 lines, dropped oldest) and never written to disk. Off by default. Applies live.",
+  save_clips: "**Show replay clips.** Show the speaker button on finished lines and keep their short audio clips in memory for replay. Audio is held only in memory (the last 200 lines, dropped oldest) and never written to disk. Off by default. Applies live.",
   self_en: "**Transcribe your own microphone** in addition to everyone else's audio. Uses your mic, gated by Discord's own per-client mute/VAD state below.",
   self_unmute: "Only capture your mic while you are **unmuted in Discord** for that client. Off = transcribe even when self-muted.",
   self_vad: "Only capture your mic when **Discord's voice activity** says you're speaking for that client - avoids transcribing background room noise.",
@@ -2322,9 +2368,7 @@ const HELP = {
       + '<div style="display:flex;align-items:center;gap:7px;opacity:.78;margin:3px 0"><span style="color:#23a55a;font-weight:700">↪</span><b style="color:#c4c9d0">Elly</b> joined the channel</div>'
       + '<div style="display:flex;align-items:center;gap:7px;opacity:.78;margin:3px 0"><span style="color:#949ba4">✕</span><b style="color:#c4c9d0">Sam</b> muted</div>'
       + '<div style="display:flex;align-items:center;gap:7px;opacity:.78;margin:3px 0"><span style="color:#5865f2">▣</span><b style="color:#c4c9d0">Von</b> started streaming</div></div>' },
-  ui_newtop: "**Newest on top.** Off = newest lines at the bottom (classic chat). On = newest pops in at the top.",
-  ui_ts: "Show a **timestamp** on each transcript line.",
-  ui_tsfmt: "Timestamp style: **clock** (`14:03:22`) or **relative** (`12s ago`).",
+  ui_tsfmt: "Timestamp style: **clock** (`14:03:22`), **relative** (`12s ago`), or **Off**.",
   o_subs: { md: "**Show subtitles.** The live caption bubbles at the bottom of the Discord window. Turn off to keep only the transcript log.",
     preview: '<div style="background:rgba(0,0,0,.82);border-radius:10px;padding:6px 10px;display:flex;align-items:center;gap:8px;font:13px/1.3 sans-serif;color:#fff">'
       + '<span style="width:18px;height:18px;border-radius:50%;background:#5865f2;flex:0 0 auto"></span>'
@@ -2346,7 +2390,7 @@ const HELP = {
   o_fade: "Start fading older subtitles once this many are stacked.",
   o_minop: "Lowest opacity a faded subtitle reaches (0–1).",
   adv_beam: "**Beam size.** `1` = greedy & fastest. Higher = more accurate but slower.",
-  adv_device: "**auto** picks the best for your GPU. **cuda** = NVIDIA. **hip** = AMD (ROCm); **vulkan** = any AMD/Intel GPU (the reliable AMD fallback if hip won't load). **cpu** works anywhere. Parakeet only supports auto, cuda, and cpu.",
+  adv_device: "**auto** picks the best for your GPU. **cuda** = NVIDIA CUDA. **hip** = AMD HIP. **vulkan** = Vulkan on any compatible GPU. **cpu** works anywhere. Parakeet only supports auto, cuda, and cpu.",
   adv_compute: "Numeric precision. `float16` is best on GPU; `int8`/`int8_float16` use less memory; `float32` is CPU-friendly. Whisper only (Parakeet always runs int8).",
   adv_threads: "**CPU threads** the model uses. `0` = auto (library default). Higher can speed up CPU transcription; ignored on GPU. Needs a restart.",
   adv_relay: "Local WebSocket port the overlay connects to. Change only if `8765` clashes with something.",
