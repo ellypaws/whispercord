@@ -13,7 +13,11 @@ DEFAULTS = {
     "num_threads": 0,                   # CPU worker threads for the model (0 = auto / library default)
     "transcribe_sounds": True,          # keep emitted non-speech events like [laughs] / ♪ music ♪
     "save_clips": False,                # show replay buttons by keeping finalized-utterance audio in RAM
-    "inject_overlay": True,             # also show subtitles inside Discord (via CDP)
+    "inject_overlay": True,             # also show subtitles inside Discord (via CDP; needs cdp_enabled)
+    "cdp_enabled": False,               # opt-in: use Chrome DevTools (needs a client restart w/ debug
+                                        # port). OFF = native-only: binding/speaking/mute/video/stream
+                                        # via Frida + self via RPC + label-once names, no restart. ON
+                                        # also auto-resolves stranger names and injects the overlay.
     "relay_port": 8765,
     "cdp_port": 9223,                   # back-compat single port
     "cdp_ports": [9223, 9224, 9225, 9226],  # PTB / Discord / Canary / Dev debug ports (any reachable used)

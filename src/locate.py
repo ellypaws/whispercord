@@ -19,6 +19,17 @@ import pefile
 VOICE_STR = b"ChannelReceive::GetAudioFrameWithInfo"
 FALLBACK_RVA = 0x4481d0  # build 1.0.1199
 
+# Native SSRC<->userId binder: discord::voice::Connection::ConnectUser(std::string userId,
+# uint32_t audioSsrc, ...) and its DisconnectUser(const std::string&) twin. MSVC embeds each
+# function's __FUNCSIG__ at its own entry, so the marker xref lands inside the function itself.
+CONNECT_FUNCSIG = b"void __cdecl discord::voice::Connection::ConnectUser"
+DISCONNECT_FUNCSIG = b"void __cdecl discord::voice::Connection::DisconnectUser"
+
+# Native event sources (no CDP): remote speaking + self mute/deaf, pushed JS->native.
+SPEAKING_FUNCSIG = b"void __cdecl discord::voice::Connection::SetRemoteUserSpeaking"
+SELFMUTE_FUNCSIG = b"void __cdecl VoiceConnectionWrapper::SetSelfMute"
+SELFDEAF_FUNCSIG = b"void __cdecl VoiceConnectionWrapper::SetSelfDeafen"
+
 # %LOCALAPPDATA%\DiscordPTB\app-*\modules\discord_voice-1\discord_voice\discord_voice.node
 NODE_GLOB = os.path.join(
     os.environ.get("LOCALAPPDATA", ""),
@@ -124,8 +135,66 @@ def locate_rva(node_path=None, prefer_running_build=None, verbose=False):
         return FALLBACK_RVA, path
 
 
+def _func_by_marker(pe, marker):
+    """RVA of the function whose body references `marker` via a `lea [rip+disp32]`."""
+    s = _find_string_rva(pe, marker)
+    if s is None:
+        return None
+    for ref in _scan_lea_refs(pe, s):
+        fn = _func_start_for_rva(pe, ref)
+        if fn is not None:
+            return fn
+    return None
+
+
+def locate_bind_rvas(node_path=None, prefer_running_build=None, verbose=False):
+    """Return (connectUserRva, disconnectUserRva); either may be None if not found.
+    These hook the native ConnectUser/DisconnectUser so we get authoritative ssrc->userId
+    with no webpack/BetterDiscord/CDP (works on vanilla stable/Canary)."""
+    path = node_path or find_voice_node(prefer_running_build)
+    if not path or not os.path.exists(path):
+        return None, None
+    try:
+        pe = pefile.PE(path, fast_load=True)
+        cu = _func_by_marker(pe, CONNECT_FUNCSIG)
+        du = _func_by_marker(pe, DISCONNECT_FUNCSIG)
+        if verbose:
+            print("[locate] ConnectUser=%s DisconnectUser=%s (%s)"
+                  % (hex(cu) if cu else None, hex(du) if du else None, os.path.basename(path)))
+        return cu, du
+    except Exception as e:
+        if verbose:
+            print("[locate] bind-rva scan failed (%s)" % e)
+        return None, None
+
+
+def locate_event_rvas(node_path=None, prefer_running_build=None, verbose=False):
+    """Return {'speaking','selfmute','selfdeaf'} RVAs (any may be None). These hook the native
+    event setters so we get remote-speaking + self mute/deaf with no CDP/webpack."""
+    path = node_path or find_voice_node(prefer_running_build)
+    out = {"speaking": None, "selfmute": None, "selfdeaf": None}
+    if not path or not os.path.exists(path):
+        return out
+    try:
+        pe = pefile.PE(path, fast_load=True)
+        out["speaking"] = _func_by_marker(pe, SPEAKING_FUNCSIG)
+        out["selfmute"] = _func_by_marker(pe, SELFMUTE_FUNCSIG)
+        out["selfdeaf"] = _func_by_marker(pe, SELFDEAF_FUNCSIG)
+        if verbose:
+            print("[locate] events %s (%s)" % ({k: hex(v) if v else None for k, v in out.items()},
+                                               os.path.basename(path)))
+    except Exception as e:
+        if verbose:
+            print("[locate] event-rva scan failed (%s)" % e)
+    return out
+
+
 if __name__ == "__main__":
     # self-test across every installed build
     for p in sorted(glob.glob(NODE_GLOB)):
         rva, _ = locate_rva(p, verbose=True)
-        print("  => 0x%x  (%s)" % (rva, p))
+        cu, du = locate_bind_rvas(p, verbose=True)
+        ev = locate_event_rvas(p, verbose=True)
+        print("  => audio 0x%x  ConnectUser %s  DisconnectUser %s  events %s  (%s)"
+              % (rva, hex(cu) if cu else None, hex(du) if du else None,
+                 {k: hex(v) if v else None for k, v in ev.items()}, p))

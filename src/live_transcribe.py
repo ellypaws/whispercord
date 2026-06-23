@@ -55,7 +55,7 @@ import models as model_store
 import gpu_detect                    # device routing (auto|cuda|hip|vulkan|cpu)
 import backends                      # transcription backend seam (CTranslate2 today)
 from config import load as _load_config
-from locate import locate_rva       # runtime RVA auto-locator (survives Discord updates)
+from locate import locate_rva, locate_bind_rvas, locate_event_rvas  # runtime RVA auto-locators
 CFG = _load_config()
 ASR_ENGINE = (CFG.get("asr_engine") or "whisper").strip().lower()
 MODEL = CFG["whisper_model"]
@@ -225,6 +225,10 @@ interim_at = collections.defaultdict(float)    # src -> last interim transcribe 
 src2user = {}                                  # src -> {userId, name, avatar}
 src_client = {}                                # src -> client exe name (e.g. 'discordptb.exe')
 src_ssrc = {}                                  # src -> int ssrc read from the native ChannelReceive
+native_bind = {}                               # (client, ssrc) -> userId, from the native ConnectUser hook
+                                               # (authoritative; works with no webpack/BetterDiscord/CDP)
+native_speaking = {}                           # client -> {userId: last_ts} from SetRemoteUserSpeaking hook
+native_self = {}                               # client -> {"muted":bool,"deaf":bool} from SetSelf* hooks
 src_kind = {}                                  # src -> 'voice' | 'stream' (screenshare/Go Live audio)
 native_kind = set()                            # srcs whose kind came from the renderer ssrc map (authoritative)
 active_since = {}                              # src -> time the current uninterrupted active run began
@@ -302,6 +306,7 @@ def broadcast_status():
 
 SELF = CFG.get("self_transcribe", {})          # own-voice transcription options
 SELF_SPEAK_GRACE_S = 1.0                       # Discord self-speaking can flicker between VAD polls
+CDP_ENABLED = bool(CFG.get("cdp_enabled", False))  # opt-in CDP (auto-names + overlay); else native-only
 
 
 def apply_live_config(cfg):
@@ -310,8 +315,11 @@ def apply_live_config(cfg):
     relay-port are deliberately NOT touched here — those still require a restart."""
     global CAP, CAP_VOICE, CAP_SCREEN, SCREEN_DETECT_S, MAX_STALE_S, SCREEN_LABEL
     global GATE, GATE_DBFS, USE_VAD, NO_SPEECH, MIN_LOGPROB, DROP, REQUIRE_SPEAKING, SPK_GRACE_S
-    global LANGUAGE, BEAM, TRANSCRIBE_SOUNDS, SELF, UNCENSOR, _UNCENSOR_RULES, SAVE_CLIPS
+    global LANGUAGE, BEAM, TRANSCRIBE_SOUNDS, SELF, UNCENSOR, _UNCENSOR_RULES, SAVE_CLIPS, CDP_ENABLED
     try:
+        if "cdp_enabled" in cfg:
+            CDP_ENABLED = bool(cfg["cdp_enabled"])            # mapping_thread reads this each pass
+            CFG["cdp_enabled"] = CDP_ENABLED
         if "voice_events" in cfg:
             CFG["voice_events"] = bool(cfg["voice_events"])   # mapping_thread reads this each pass
         if "uncensor" in cfg:
@@ -365,6 +373,46 @@ def save_user_cache():
     except Exception:
         pass
 
+self_rpc_ids = set()                            # my own user ids, learned from Discord RPC (no CDP)
+
+def seed_self_from_rpc():
+    """Learn my own account(s) via Discord RPC over the named pipe - no CDP/webpack/restart -
+    and cache id->{name,avatar} so own-voice lines are labelled even when the renderer stores
+    are unreachable. Returns the set of self user ids."""
+    try:
+        import discord_rpc
+        found = discord_rpc.discover_self()
+    except Exception:
+        return self_rpc_ids
+    changed = False
+    names = []
+    for s in found:
+        uid = s.get("id")
+        if not uid:
+            continue
+        self_rpc_ids.add(uid)
+        name = s.get("global_name") or s.get("username")
+        for n in (s.get("global_name"), s.get("username")):
+            if n and n not in names:
+                names.append(n)
+        av = s.get("avatar")
+        avatar = ("https://cdn.discordapp.com/avatars/%s/%s.png?size=64" % (uid, av)) if av \
+            else "https://cdn.discordapp.com/embed/avatars/0.png"
+        cur = user_cache.get(uid)
+        # only fill when missing/avatarless, so a richer guild-specific entry isn't clobbered
+        if name and (not cur or not cur.get("avatar")):
+            user_cache[uid] = {"userId": uid, "name": name, "avatar": avatar}
+            changed = True
+    if changed:
+        save_user_cache()
+    # surface our own names to the UI for keyword onboarding - works with no CDP / no restart
+    if names:
+        try:
+            broadcast({"type": "selfIdentity", "names": names})
+        except Exception:
+            pass
+    return self_rpc_ids
+
 JS = r"""
 let MOD = null;
 let SSRC_OFF = -1;          // located offset of remote_ssrc_ inside ChannelReceive (auto-found)
@@ -387,6 +435,61 @@ function readSsrc(recv) {   // recv = ChannelReceive*; find remote_ssrc_ once, t
     if (WANT[v >>> 0]) { SSRC_OFF = o; return v; }
   }
   return 0;
+}
+function readStdString(p) {   // MSVC std::string: data inline (SSO) when capacity<16, else heap ptr
+  try {
+    const cap = p.add(0x18).readU64();
+    const len = p.add(0x10).readU64();
+    const data = cap.compare(16) < 0 ? p : p.readPointer();
+    const n = len.toNumber();
+    if (n < 0 || n > 64) return null;
+    return data.readUtf8String(n);
+  } catch (e) { return null; }
+}
+function installBind(cu, du) {
+  // Authoritative SSRC<->userId straight from discord_voice.node, no renderer needed:
+  //   Connection::ConnectUser(std::string userId, uint32 audioSsrc, ...)   [rdx=&userId, r8=ssrc]
+  //   Connection::DisconnectUser(const std::string& userId)                [rdx=&userId]
+  if (!MOD) modpath();
+  if (!MOD) return false;
+  const CLIENT = ((Process.enumerateModules()[0] || {}).name || "").toLowerCase();
+  if (cu) {
+    Interceptor.attach(MOD.base.add(cu), {
+      onEnter(a) {
+        const uid = readStdString(a[1]); const ssrc = a[2].toUInt32();
+        if (uid && ssrc) send({ bind: true, client: CLIENT, userId: uid, ssrc: ssrc });
+      }
+    });
+  }
+  if (du) {
+    Interceptor.attach(MOD.base.add(du), {
+      onEnter(a) { const uid = readStdString(a[1]); if (uid) send({ unbind: true, client: CLIENT, userId: uid }); }
+    });
+  }
+  return true;
+}
+function installEvents(spk, smute, sdeaf) {
+  // Native event sources (no CDP):
+  //   SetRemoteUserSpeaking(const std::string& userId, SpeakingStatus status, bool) [rdx=&userId, r8=status]
+  //   VoiceConnectionWrapper::SetSelfMute(bool) / SetSelfDeafen(bool)               [rdx=bool]
+  if (!MOD) modpath();
+  if (!MOD) return false;
+  const CLIENT = ((Process.enumerateModules()[0] || {}).name || "").toLowerCase();
+  if (spk) {
+    Interceptor.attach(MOD.base.add(spk), {
+      onEnter(a) {
+        const uid = readStdString(a[1]);
+        if (uid) send({ speak: true, client: CLIENT, userId: uid, on: a[2].toUInt32() !== 0 });
+      }
+    });
+  }
+  if (smute) {
+    Interceptor.attach(MOD.base.add(smute), { onEnter(a) { send({ selfmute: true, client: CLIENT, muted: a[1].toUInt32() !== 0 }); } });
+  }
+  if (sdeaf) {
+    Interceptor.attach(MOD.base.add(sdeaf), { onEnter(a) { send({ selfdeaf: true, client: CLIENT, deaf: a[1].toUInt32() !== 0 }); } });
+  }
+  return true;
 }
 function install(rva) {
   if (!MOD) modpath();
@@ -411,7 +514,7 @@ function install(rva) {
   send({ ready: true, pid: PID, client: CLIENT });
   return true;
 }
-rpc.exports = { modpath: modpath, install: install, setSsrcs: setSsrcs };
+rpc.exports = { modpath: modpath, install: install, setSsrcs: setSsrcs, installBind: installBind, installEvents: installEvents };
 """
 
 def on_message(msg, data):
@@ -420,6 +523,39 @@ def on_message(msg, data):
     p = msg["payload"]
     if p.get("ready"):
         print("[capture] hook installed (pid %s)" % p.get("pid")); return
+    if p.get("bind"):                          # native ConnectUser: authoritative ssrc -> userId
+        cl, uid, ssrc = (p.get("client") or "").lower(), p.get("userId"), p.get("ssrc")
+        if cl and uid and ssrc:
+            with lock:
+                native_bind[(cl, ssrc)] = uid
+        return
+    if p.get("unbind"):                        # native DisconnectUser: user left this client's call
+        cl, uid = (p.get("client") or "").lower(), p.get("userId")
+        with lock:
+            for k in [k for k, v in native_bind.items() if k[0] == cl and v == uid]:
+                del native_bind[k]
+            native_speaking.get(cl, {}).pop(uid, None)
+        return
+    if p.get("speak"):                         # native SetRemoteUserSpeaking: remote speaking on/off
+        cl, uid = (p.get("client") or "").lower(), p.get("userId")
+        if cl and uid:
+            with lock:
+                d = native_speaking.setdefault(cl, {})
+                if p.get("on"):
+                    d[uid] = time.time()
+                else:
+                    d.pop(uid, None)
+        return
+    if p.get("selfmute"):                       # native SetSelfMute
+        cl = (p.get("client") or "").lower()
+        with lock:
+            native_self.setdefault(cl, {})["muted"] = bool(p.get("muted"))
+        return
+    if p.get("selfdeaf"):                       # native SetSelfDeafen
+        cl = (p.get("client") or "").lower()
+        with lock:
+            native_self.setdefault(cl, {})["deaf"] = bool(p.get("deaf"))
+        return
     src = p.get("src")
     if src and data:
         now = time.time()
@@ -440,6 +576,11 @@ def _on_unhook(pid):
     if name and name not in hooked_pids.values():
         hooked_clients.discard(name)
         client_scripts.pop(name, None)
+        with lock:                              # drop this client's native ssrc bindings + event state
+            for k in [k for k in native_bind if k[0] == name]:
+                del native_bind[k]
+            native_speaking.pop(name, None)
+            native_self.pop(name, None)
     if name:
         print("[capture] unhooked PID %d (%s) - will re-attach when it returns" % (pid, name))
 
@@ -468,13 +609,30 @@ def attach_new():
             rva, _ = locate_rva(path)
             if not sc.exports_sync.install(rva):
                 s.detach(); continue
+            # Authoritative native ssrc->userId binder (no webpack/BD/CDP). Best-effort: if the
+            # ConnectUser symbols can't be located on this build, fall back to the CDP ssrc map.
+            cu, du = locate_bind_rvas(path)
+            bind_ok = False
+            if cu or du:
+                try:
+                    bind_ok = sc.exports_sync.install_bind(cu or 0, du or 0)
+                except Exception:
+                    bind_ok = False
+            # native event sources (speaking + self mute/deaf) - no CDP needed
+            ev = locate_event_rvas(path)
+            if any(ev.values()):
+                try:
+                    sc.exports_sync.install_events(ev["speaking"] or 0, ev["selfmute"] or 0, ev["selfdeaf"] or 0)
+                except Exception:
+                    pass
             name = pr.name.lower()
             hooked_pids[pr.pid] = name
             hooked_clients.add(name)
             client_scripts[name] = sc          # mapping_thread pushes ssrcs here (latest script wins)
             frida_sessions.append((s, sc))
             s.on("detached", lambda *a, _pid=pr.pid: _on_unhook(_pid))
-            print("[capture] hooked %s PID %d  RVA 0x%x" % (pr.name, pr.pid, rva))
+            print("[capture] hooked %s PID %d  RVA 0x%x  native-bind=%s"
+                  % (pr.name, pr.pid, rva, "on" if bind_ok else "off"))
             n += 1
         except Exception:
             continue
@@ -758,9 +916,12 @@ def mapping_thread():
     ports = CFG.get("cdp_ports") or [CFG["cdp_port"]]
     master_inject = os.environ.get("VT_INJECT_OVERLAY", "1") == "1"
     conns = {}                                  # port -> {client, cdp, fails}
+    cstate = {}                                 # client -> per-client state for native-only clients (no CDP)
     injected = set()                            # clients already injected (avoid re-inject spam)
 
     def try_connect():
+        if not CDP_ENABLED:                     # native-only mode: never open a debug port (no restart)
+            return
         for port in ports:
             if port in conns:
                 continue
@@ -789,8 +950,9 @@ def mapping_thread():
         info = user_cache.get(uid)
         # Re-resolve when we have nothing OR the cached entry has no avatar: a user first seen "cold"
         # (e.g. the instant they join, before their avatar loads) would otherwise be cached avatarless
-        # forever, so every later event for them shows no picture.
-        if not info or not info.get("avatar"):
+        # forever, so every later event for them shows no picture. With no CDP (c is None) we can only
+        # serve the cache / label-once entries - names auto-resolve once labelled or via opt-in CDP.
+        if (not info or not info.get("avatar")) and c is not None:
             try:
                 fresh = user_info(c, uid)           # resolve via the SAME client
             except Exception:
@@ -806,7 +968,7 @@ def mapping_thread():
             return
         info = resolve_user(c, uid)
         if info:
-            src2user[s] = info
+            src2user[s] = {**info, "userId": uid}
             nm = display_name(s, info["name"])
             print("[map] %s [%s] -> %s" % (s[-6:], client, nm))
             broadcast({"type": "rename", "userId": s, "name": nm, "avatar": info["avatar"],
@@ -875,17 +1037,98 @@ def mapping_thread():
             if a.get("stream") != b.get("stream"):
                 emit_event("stream_on" if b.get("stream") else "stream_off", uid, client, c)
 
+    def process_native_client(client, st, now):
+        """Per-client work for a hooked client with NO CDP connection: bind + speaking + roster +
+        self-gate entirely from the Frida native hooks (ConnectUser/SetRemoteUserSpeaking/SetSelf*).
+        Names come from the cache / label-once (no auto-resolve without CDP). No correlation needed -
+        native_bind is the authoritative ssrc->userId map."""
+        # --- speaking (native) ---
+        with lock:
+            spk = set((native_speaking.get(client) or {}).keys())
+            for u in spk:
+                last_speaking[(client, u)] = now
+        spk_poll[client] = now
+        cur_spk = frozenset(spk)
+        if cur_spk != st.get("spk_bcast"):
+            st["spk_bcast"] = cur_spk
+            broadcast({"type": "speaking", "client": client, "ids": list(spk)})
+
+        # --- own-voice gate (native mute; downstream RMS/VAD handles speech detection) ---
+        if self_enabled_for(client):
+            nself = native_self.get(client) or {}
+            open_ = (not SELF.get("only_when_unmuted", True)) or (not nself.get("muted", False))
+            with lock:
+                self_gate[client] = open_
+            key = "self:" + client
+            if open_ and key not in src2user:
+                sid = next(iter(self_rpc_ids), None)
+                info = user_cache.get(sid) if sid else None
+                if info:
+                    src2user[key] = {**info, "userId": sid}
+        else:
+            with lock:
+                self_gate[client] = False
+
+        # --- native ssrc -> userId binding ---
+        with lock:
+            active = [s for s, t in last_frame.items()
+                      if now - t < 0.4 and src_client.get(s) == client]
+            ssrcs = {s: src_ssrc.get(s) for s in active}
+            native_ssrcs = [k[1] for k in native_bind if k[0] == client]
+        sk = client_scripts.get(client)          # feed audio ssrcs so the hook pins remote_ssrc_
+        if sk and native_ssrcs and now - st.get("ssrc_t", 0) > 1.0:
+            st["ssrc_t"] = now
+            try:
+                sk.exports_sync.set_ssrcs(native_ssrcs)
+            except Exception:
+                pass
+        for s in active:
+            sv = ssrcs.get(s)
+            uid = native_bind.get((client, sv)) if sv else None
+            if uid:
+                native_kind.add(s)
+                confirm_bind(s, uid, client, None, NAME_VOTE_NATIVE)
+
+        # --- roster: native participants (label-once names from cache) ~2s ---
+        if now - st.get("roster_t", 0) > 2.0:
+            st["roster_t"] = now
+            with lock:
+                parts = sorted({v for k, v in native_bind.items() if k[0] == client})
+            members = []
+            for uid in parts:
+                info = user_cache.get(uid)
+                members.append({"userId": uid,
+                                "name": (info or {}).get("name") or ("user " + uid[-4:]),
+                                "avatar": (info or {}).get("avatar"),
+                                "stream": False, "mute": False, "deaf": False, "video": False})
+            broadcast({"type": "roster", "client": client, "members": members})
+
     try_connect()
-    if not conns:
-        print("[map] no CDP yet - retrying every 3s; placeholder names until a client opens its debug port")
+    if CDP_ENABLED and not conns:
+        print("[map] CDP enabled but no debug port yet - retrying every 3s")
+    elif not CDP_ENABLED:
+        print("[map] native-only mode (no CDP/restart): matching via Frida + self via RPC; "
+              "names from cache/label-once. Enable CDP for auto-stranger-names + in-Discord overlay.")
+
+    # self-detection via RPC (no CDP needed). discover_self() blocks ~1-2s probing pipes, so it
+    # runs off-thread to never stall the 0.25s mapping loop.
+    def _seed_self():
+        ids = seed_self_from_rpc()
+        if ids:
+            print("[rpc] self id(s): %s" % ", ".join(sorted(ids)))
+    threading.Thread(target=_seed_self, daemon=True).start()
 
     last_probe = time.time()
+    last_rpc = time.time()
     while True:
         time.sleep(0.25)
         now = time.time()
         if now - last_probe > 3:                # re-probe for newly-opened ports (e.g. you restarted Canary)
             last_probe = now
             try_connect()
+        if now - last_rpc > 30:                 # refresh self identity (a client may have (re)launched)
+            last_rpc = now
+            threading.Thread(target=seed_self_from_rpc, daemon=True).start()
         if reinject_event.is_set():             # UI asked to re-inject overlays (no engine restart)
             reinject_event.clear()
             for _port, _st in list(conns.items()):
@@ -921,6 +1164,14 @@ def mapping_thread():
                            "resolved": bool(src2user.get(src)), "locked": False})
                 continue
             uid, nm = req.get("userId"), req.get("name")
+            # the real discord userId behind this source (for label-once persistence): explicit pick,
+            # current binding, or the native ssrc map.
+            real_uid = uid or (src2user.get(src) or {}).get("userId")
+            if real_uid and str(real_uid).startswith("manual:"):
+                real_uid = None
+            if not real_uid and cl:
+                _sv = src_ssrc.get(src)
+                real_uid = native_bind.get((cl, _sv)) if _sv else None
             if uid:
                 info = None
                 for _p, _st in list(conns.items()):       # resolve name+avatar via any live client
@@ -930,9 +1181,19 @@ def mapping_thread():
                         info = None
                     if info:
                         break
-                info = info or {"userId": uid, "name": "user " + uid[-4:], "avatar": None}
-                manual_assign[src] = {"userId": uid}; src2user[src] = info
-            elif nm:                                       # free-text label (no real user)
+                info = info or user_cache.get(uid) or {"userId": uid, "name": nm or ("user " + uid[-4:]), "avatar": None}
+                if nm:
+                    info = {**info, "name": nm}
+                manual_assign[src] = {"userId": uid}; src2user[src] = {**info, "userId": uid}
+                if nm:                                     # label-once: persist this person's name
+                    user_cache[uid] = {"userId": uid, "name": nm, "avatar": info.get("avatar")}
+                    save_user_cache()
+            elif nm and real_uid:                          # free-text name for a natively-known person
+                info = {"userId": real_uid, "name": nm, "avatar": (user_cache.get(real_uid) or {}).get("avatar")}
+                src2user[src] = info; manual_assign[src] = {"userId": real_uid}
+                user_cache[real_uid] = {"userId": real_uid, "name": nm, "avatar": info.get("avatar")}
+                save_user_cache()
+            elif nm:                                       # free-text label (no real user behind it)
                 info = {"userId": "manual:" + src, "name": nm, "avatar": None}
                 manual_assign[src] = {"name": nm}; src2user[src] = info
             else:
@@ -942,7 +1203,7 @@ def mapping_thread():
                        "avatar": info.get("avatar"), "client": cl, "resolved": True, "locked": True})
         # Correlate INDEPENDENTLY per client: a stream from client X can only ever bind
         # to a speaker reported by client X's own CDP. No cross-client leakage.
-        for port, st0 in list(conns.items()):
+        for port, st0 in (list(conns.items()) if CDP_ENABLED else []):
             client, c = st0["client"], st0["cdp"]
             try:
                 speaking = set(speaking_users(c))
@@ -1088,12 +1349,19 @@ def mapping_thread():
                     sm = None
                 if sm and sm.get("map"):
                     st0["ssrc2user"] = sm["map"]
-                    sk = client_scripts.get(client)
-                    if sk and sm.get("audio"):
-                        try:
-                            sk.exports_sync.set_ssrcs([int(x) for x in sm["audio"]])
-                        except Exception:
-                            pass
+                # Feed the hook the set of valid audio ssrcs so it can pin remote_ssrc_'s offset and
+                # tag every frame. Source it from the CDP map when reachable AND from the native
+                # ConnectUser binds - the latter is what makes this work on non-BD/no-webpack clients.
+                with lock:
+                    native_ssrcs = [k[1] for k in native_bind if k[0] == client]
+                cdp_ssrcs = [int(x) for x in (sm.get("audio") or [])] if sm else []
+                audio_ssrcs = list(set(cdp_ssrcs) | set(native_ssrcs))
+                sk = client_scripts.get(client)
+                if sk and audio_ssrcs:
+                    try:
+                        sk.exports_sync.set_ssrcs(audio_ssrcs)
+                    except Exception:
+                        pass
             ssrc2user = st0.get("ssrc2user") or {}
             streamers = [uid for uid, v in (st0.get("vs_prev") or {}).items() if v.get("stream")]
 
@@ -1103,16 +1371,22 @@ def mapping_thread():
                 run_len = {s: now - active_since.get(s, now) for s in active}
                 ssrcs = {s: src_ssrc.get(s) for s in active}
 
-            # (1) ssrc -> {userId, kind}: the authoritative path. Discord's renderer tells us, per
-            #     connection, which ssrc is a mic ('voice', default connection) and which is a Go
-            #     Live's screenshare audio ('stream', StreamRTCConnectionStore). Bind straight to
-            #     the owner and classify with no guessing.
+            # (1) ssrc -> {userId, kind}: the authoritative path. Two sources, both ground truth:
+            #     - native_bind: discord_voice.node's ConnectUser hook (no webpack/BD/CDP needed -
+            #       works on vanilla stable/Canary where the renderer stores are unreachable).
+            #     - ssrc2user: the renderer ssrc map (when BD/webpack is reachable) - also carries
+            #       the voice/stream classification (mic vs Go-Live screenshare audio).
+            #     Prefer native_bind for the identity; use ssrc2user for kind, else default 'voice'.
             for s in active:
-                ent = ssrc2user.get(str(ssrcs.get(s) or ""))
-                if ent and ent.get("userId"):
+                sv = ssrcs.get(s)
+                ent = ssrc2user.get(str(sv or "")) if sv else None
+                uid = native_bind.get((client, sv)) if sv else None
+                if not uid and ent:
+                    uid = ent.get("userId")
+                if uid:
                     native_kind.add(s)
-                    set_kind(s, "stream" if ent.get("kind") == "stream" else "voice", client)
-                    confirm_bind(s, ent["userId"], client, c, NAME_VOTE_NATIVE)
+                    set_kind(s, "stream" if (ent and ent.get("kind") == "stream") else "voice", client)
+                    confirm_bind(s, uid, client, c, NAME_VOTE_NATIVE)
             # (2) fallback ONLY for clients whose renderer stores are unreachable, so (1) gave no
             #     ssrc map: a source that runs continuously past the threshold while someone is
             #     screensharing is screenshare audio, not speech; one with normal speech gaps heals.
@@ -1184,6 +1458,19 @@ def mapping_thread():
                 print("[dbg %s] spk=%d(%s) active=%d solo=%s | %s" % (
                     client, len(spk), ",".join(u[-4:] for u in list(spk)[:4]),
                     len(active), solo, " ".join(summ)))
+
+        # Native-only clients: hooked (audio) but with no CDP connection. When CDP is off (the
+        # default) this is every hooked client; when on, the ones without a live debug port. Driven
+        # entirely by the Frida native hooks - no restart, no webpack, no BetterDiscord.
+        with lock:
+            cdp_names = {st0["client"] for st0 in conns.values() if st0.get("client")}
+            native_only = [cl for cl in hooked_clients if cl and cl not in cdp_names]
+        for client in native_only:
+            try:
+                process_native_client(client, cstate.setdefault(client, {}), now)
+            except Exception as e:
+                if DEBUG_BIND:
+                    print("[native %s] %s" % (client, e))
 
 # ---------------- transcription ----------------
 def purge_stale_sources(now, idle_s=600.0):

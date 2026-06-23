@@ -1099,8 +1099,10 @@ function openSetupWizard(manual) {
     device: (CFG && CFG.device) || "auto",   // wizard manages engine only; device stays auto unless overridden in Advanced
     language: (CFG && CFG.language) || "",
     parakeet_model: (CFG && CFG.parakeet_model) || PARAKEET_MODEL_DEFAULT,
-    keywords: [],          // built when the keywords step opens, after the restart can detect names
+    keywords: [],          // built when the keywords step opens (names via RPC, no restart needed)
     keywordsInit: false,
+    selfFetched: false,    // one-shot RPC self-name fetch for keyword suggestions
+    cdpEnabled: !!(CFG && CFG.cdp_enabled),  // flipped on if the user restarts a client for rich names
   };
   // Case-insensitive merge that keeps the existing order and never drops what's already saved.
   const mergeKw = (into, more) => {
@@ -1123,13 +1125,14 @@ function openSetupWizard(manual) {
   bg.appendChild(card);
   document.body.appendChild(bg);
 
-  // Keywords come AFTER launch: detecting the user's names needs Discord restarted with the debug port.
-  const steps = () => ["engine"].concat(state.engine === "whisper" ? ["language"] : [], ["launch", "keywords", "done"]);
+  // Keywords come BEFORE launch now: your own name is read via Discord RPC (no restart/CDP needed),
+  // so keyword setup no longer depends on the optional debug-port step.
+  const steps = () => ["engine"].concat(state.engine === "whisper" ? ["language"] : [], ["keywords", "launch", "done"]);
   const stepTitle = (kind) => ({
     engine: "Choose engine",
     language: "Language",
     keywords: "Alert keywords",
-    launch: "Launch Discord",
+    launch: "Names & captions",
     done: "Done",
   })[kind] || "Setup";
 
@@ -1199,6 +1202,17 @@ function openSetupWizard(manual) {
   }
 
   function renderKeywords() {
+    // Pull our own Discord name(s) via RPC (no CDP/restart) the first time we land here, so
+    // suggestions are ready immediately even before the engine starts.
+    if (!state.selfFetched) {
+      state.selfFetched = true;
+      (async () => {
+        try {
+          const names = await API.self_identity();
+          if (names && names.length) { onSelfIdentity(names); if (state.step === steps().indexOf("keywords")) renderKeywords(); }
+        } catch (e) {}
+      })();
+    }
     // Build from what's already saved, then fold in any detected names. First visit seeds the list;
     // later visits only add newly detected names so the user's own edits are never undone.
     if (!state.keywordsInit) {
@@ -1251,7 +1265,8 @@ function openSetupWizard(manual) {
   function renderLaunch() {
     panel.innerHTML = "";
     const p = document.createElement("p");
-    p.textContent = "Restart Discord with the debug port so we can show speaker names and captions. This closes the current call.";
+    p.textContent = "Turn this on to auto-resolve other people's names and show captions inside Discord. "
+      + "It restarts the client and briefly closes the call.";
     panel.appendChild(p);
     const running = clients.filter((c) => c.running);   // only the clients actually open right now
     const box = document.createElement("div");
@@ -1272,7 +1287,7 @@ function openSetupWizard(manual) {
         else { btn.textContent = "Restart with port"; }
         btn.onclick = async () => {
           btn.disabled = true; btn.textContent = "...";
-          try { await API.ensure_client(c.folder, true); } catch (e) {}
+          try { await API.ensure_client(c.folder, true); state.cdpEnabled = true; } catch (e) {}
           try { clients = await API.list_clients(); clientList = clients; renderLaunch(); renderClients(); } catch (e) {}
         };
         row.appendChild(btn);
@@ -1291,11 +1306,27 @@ function openSetupWizard(manual) {
   function renderDone() {
     panel.innerHTML = "";
     const p = document.createElement("p");
-    const where = resolvedDeviceLabel(state.engine);
-    p.textContent = (state.engine === "parakeet")
-      ? "Ready to use NeMo Parakeet on " + where + ". Language is auto-detected and sound captions stay off for this engine."
-      : "Ready to use Whisper on " + where + ".";
+    p.textContent = "All set:";
     panel.appendChild(p);
+    const rows = [["Engine", state.engine === "parakeet" ? "NeMo Parakeet" : "Whisper"],
+                  ["Device", resolvedDeviceLabel(state.engine)]];
+    if (state.engine !== "parakeet") {
+      const opt = Array.from($("adv_lang").options).find((o) => o.value === state.language);
+      rows.push(["Language", state.language ? ((opt && opt.textContent) || state.language) : "Auto-detect"]);
+    }
+    const kwN = (state.keywordsInit ? state.keywords : kwList).length;
+    rows.push(["Alert keywords", kwN ? (kwN + (kwN === 1 ? " keyword" : " keywords")) : "None"]);
+    rows.push(["Names & captions", state.cdpEnabled ? "Auto (CDP on)" : "Name people once in Speakers"]);
+    const ul = document.createElement("ul");
+    ul.style.listStyle = "none"; ul.style.padding = "0"; ul.style.margin = "4px 0 0";
+    rows.forEach(([k, v]) => {
+      const li = document.createElement("li"); li.style.padding = "5px 0"; li.style.display = "flex"; li.style.gap = "8px";
+      li.innerHTML = icon("check");
+      const t = document.createElement("span"); t.innerHTML = "<b>" + k + ":</b> ";
+      t.appendChild(document.createTextNode(v)); li.appendChild(t);
+      ul.appendChild(li);
+    });
+    panel.appendChild(ul);
   }
 
   async function finish() {
@@ -1309,6 +1340,7 @@ function openSetupWizard(manual) {
     cfg.language = state.engine === "parakeet" ? "" : state.language;
     cfg.keyword_onboarded = true;
     cfg.setup_completed = true;
+    cfg.cdp_enabled = !!state.cdpEnabled;   // opt-in CDP (rich names + overlay); default stays off
     cfg.alerts = Object.assign({}, cfg.alerts, { keywords: merged });
     await API.save_config(cfg);
     CFG = cfg; kwList = merged;
@@ -1382,6 +1414,14 @@ function toast(text, saving) {
 // like stream audio / own-voice / gating apply live without an engine restart
 function pushLiveConfig(cfg) {
   try { if (relay && relay.readyState === 1) relay.send(JSON.stringify({ type: "setConfig", config: cfg })); } catch (e) {}
+}
+// Restarting a client with its debug port IS enabling CDP, so names auto-resolve and the overlay
+// injects from then on. No separate toggle - it follows the restart.
+async function enableCdp() {
+  if (CFG && CFG.cdp_enabled) return;
+  CFG = Object.assign({}, CFG, { cdp_enabled: true });
+  try { await API.save_config(CFG); } catch (e) {}
+  pushLiveConfig(CFG);
 }
 function scheduleSave() {
   if (!API) return;
@@ -1517,18 +1557,18 @@ async function refreshClients() {
 function renderReminders() {
   const box = $("reminders"); if (!box) return;
   const active = [];
+  const cdpOptIn = !!(CFG && CFG.cdp_enabled);   // only nag about the debug port once CDP (auto names) is on
   if (engineRunning) {
     for (const c of clientList) {
       const es = engineStatus[c.exe];
-      const capturingNoNames = es && es.hooked && !es.cdp;   // capturing this client but no CDP -> no names
-      const runningNoPort = c.running && !c.live;            // running without a debug port at all
+      // Only relevant in opt-in CDP mode: you enabled Rich names but this client has no debug port.
+      const richNeedsPort = cdpOptIn && es && es.hooked && !es.cdp;
       const onScreenNeeded = es && es.hooked && es.cdp && es.active > 0 && !es.mapped;   // connected but nothing resolves
-      if (capturingNoNames || runningNoPort) {
+      if (richNeedsPort) {
         active.push({
           key: "noport:" + c.folder, folder: c.folder, fix: true,
-          text: clientLabel(c.exe) + " has no debug port connected, so its speakers show as “Unknown 1a2b3”. "
-              + "Restart it with its port to resolve names, or assign them by hand in the Speakers tab "
-              + "or by clicking a name in the Transcript.",
+          text: "Restart " + clientLabel(c.exe) + " with its debug port to finish turning on auto names "
+              + "and captions, or name people once in the Speakers tab.",
         });
       } else if (onScreenNeeded) {
         active.push({
@@ -1552,7 +1592,7 @@ function renderReminders() {
     row.append(tx, grow);
     if (r.fix) {
       const fix = document.createElement("button"); fix.className = "sec glow"; fix.textContent = "Restart w/ port";
-      fix.onclick = async () => { fix.disabled = true; fix.textContent = "…"; try { await API.ensure_client(r.folder, true); } catch (e) {} setTimeout(refreshClients, 1500); };
+      fix.onclick = async () => { fix.disabled = true; fix.textContent = "…"; try { await API.ensure_client(r.folder, true); await enableCdp(); } catch (e) {} setTimeout(refreshClients, 1500); };
       row.append(fix);
     }
     const x = document.createElement("span"); x.className = "rx"; x.textContent = "×"; x.title = "Dismiss";
@@ -1582,8 +1622,8 @@ function renderClients() {
     if (hooked) {
       dot = "good";
       label = `attached ✓ · ${streams} stream${streams === 1 ? "" : "s"}`;
-      tip = cdp ? `Hooked + names resolving via CDP on port ${c.port} (${mapped} mapped).`
-                : "Audio hooked, but NO debug port - names stay as “user …”. Use Restart w/ port.";
+      tip = cdp ? `Hooked + auto-names via CDP on port ${c.port} (${mapped} mapped).`
+                : "Names are cached or set once in Speakers. Turn on auto names & captions to resolve them automatically.";
     } else if (c.live) {
       dot = "info"; label = `debug port ${c.port} ready`;
       tip = `Debug port ${c.port} open. Will attach once you Start the engine and a call is active.`;
@@ -1592,7 +1632,8 @@ function renderClients() {
       tip = "Checking whether this client is running and whether its debug port is open.";
     } else if (c.running) {
       dot = "warn"; label = "running - no debug port";
-      tip = "Capture works but names won't resolve. Restart w/ port enables names (closes the current call).";
+      tip = "Restart with its port to auto-resolve other people's names and show captions inside Discord "
+          + "(closes the current call).";
     } else {
       dot = "off"; label = "not running";
       tip = "Launch this client to capture it.";
@@ -1608,10 +1649,11 @@ function renderClients() {
       btn.textContent = "Checking"; btn.disabled = true;
     } else {
       btn.textContent = c.running ? "Restart w/ port" : "Launch";
-      if (c.running && !c.live) btn.classList.add("glow");   // CTA nudge: this is the one action that turns on names
+      if (c.running && !c.live && CFG && CFG.cdp_enabled) btn.classList.add("glow");   // only nudge once CDP (auto names) is on
       btn.onclick = async () => {
         btn.disabled = true; btn.textContent = "…";
         await API.ensure_client(c.folder, c.running && !c.live);
+        await enableCdp();
         setTimeout(refreshClients, 1500);
       };
     }

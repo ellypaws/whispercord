@@ -196,6 +196,21 @@ class Api:
     def setup_requested(self):
         return self.force_setup
 
+    def self_identity(self):
+        """Your own Discord name(s) via RPC over the pipe - no CDP, no client restart, no running
+        engine. Powers the wizard's keyword suggestions immediately. Returns [] if no client is up."""
+        try:
+            import discord_rpc
+            names = []
+            for s in discord_rpc.discover_self():
+                for n in (s.get("global_name"), s.get("username")):
+                    if n and n not in names:
+                        names.append(n)
+            return names
+        except Exception as e:
+            self.engine.log.append("[ui] self_identity failed: %s" % e)
+            return []
+
     def detect_hardware(self):
         try:
             import gpu_detect
