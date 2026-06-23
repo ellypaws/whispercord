@@ -32,6 +32,9 @@ tools/
 mcp-bd-bridge/
 transcriber-bot/
 node_modules/
+src/ui/dist/
+src/ui/app.js
+src/overlay.js
 
 # Logs / OS / editor cruft
 *.log

@@ -1,3 +1,4 @@
+// @ts-nocheck
 // Wrapper UI controller: talks to the Python js_api bridge + the relay WebSocket.
 let API = null;          // window.pywebview.api once ready
 let CFG = null;
@@ -65,6 +66,8 @@ const LU = {
   "log-out": '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/>',
   "mic": '<path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/>',
   "mic-off": '<line x1="2" x2="22" y1="2" y2="22"/><path d="M18.89 13.23A7.12 7.12 0 0 0 19 12v-2"/><path d="M5 10v2a7 7 0 0 0 12 5"/><path d="M15 9.34V5a3 3 0 0 0-5.68-1.33"/><path d="M9 9v3a3 3 0 0 0 5.12 2.12"/><line x1="12" x2="12" y1="19" y2="22"/>',
+  "headphones": '<path d="M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a9 9 0 0 1 18 0v7a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3"/>',
+  "headphones-off": '<line x1="2" x2="22" y1="2" y2="22"/><path d="M7 4.17A9 9 0 0 1 21 12v7a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3"/><path d="M3 12v7a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3"/>',
   "volume-2": '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>',
   "volume-x": '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="22" x2="16" y1="9" y2="15"/><line x1="16" x2="22" y1="9" y2="15"/>',
   "video": '<path d="m22 8-6 4 6 4V8Z"/><rect width="14" height="12" x="2" y="6" rx="2" ry="2"/>',
@@ -86,8 +89,8 @@ function icon(name, cls) {
 }
 const EVENT_ICON = {
   joined: ["log-in", "#23a55a"], left: ["log-out", "#f23f43"],
-  muted: ["mic-off", "#949ba4"], unmuted: ["mic", "#23a55a"],
-  deafened: ["volume-x", "#949ba4"], undeafened: ["volume-2", "#23a55a"],
+  muted: ["mic-off", "#f23f43"], unmuted: ["mic", "#23a55a"],
+  deafened: ["headphones-off", "#f23f43"], undeafened: ["headphones", "#23a55a"],
   video_on: ["video", "#5865f2"], video_off: ["video-off", "#949ba4"],
   stream_on: ["screen-share", "#5865f2"], stream_off: ["screen-share-off", "#949ba4"],
 };
@@ -2069,8 +2072,8 @@ function rosterFace(m, speaking) {
   img.onerror = () => { img.src = DEFAULT_AV_GRAY; };
   f.appendChild(img);
   // state badges in the avatar's corner (no extra width): deaf > mute, plus video
-  if (m.deaf) f.appendChild(badge("volume-x", "bad"));
-  else if (m.mute) f.appendChild(badge("mic-off", "mut"));
+  if (m.deaf) f.appendChild(badge("headphones-off", "bad"));
+  else if (m.mute) f.appendChild(badge("mic-off", "bad"));
   if (m.video) f.appendChild(badge("video", "vid"));
   return f;
 }
@@ -2506,3 +2509,4 @@ async function refreshGpu() {
   } catch (e) {}
 }
 window.addEventListener("pywebviewready", boot);
+

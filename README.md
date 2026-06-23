@@ -86,9 +86,13 @@ nothing happens silently. CPU-only users can switch the device to `cpu` in **Adv
 ## Quick start (from source)
 
 ```bat
-setup.bat      :: one-time: creates .venv and installs dependencies
+setup.bat      :: one-time: creates .venv, installs dependencies, builds the frontend
 run.bat        :: launches the desktop app
 ```
+
+Source runs need the frontend artifacts first. `setup.bat` handles this with
+`bun install` and `bun run build`; for manual setup, run those commands in `src\ui`
+before `python src\app.py`.
 
 1. **Settings → Discord clients** — click **Launch** / **Restart w/ port** so the client(s) you
    want names for are running with their debug port. Capture works without it; names need it.
@@ -137,6 +141,9 @@ editable from **Settings**, but here are the keys:
 build.bat                     :: onedir folder for local testing
 set VT_ONEFILE=1 && build.bat  :: single DiscordTranscriber.exe (what releases ship)
 ```
+
+`build.bat` runs the frontend build before PyInstaller so `src\ui\dist` and
+`src\overlay.js` exist for packaging.
 
 The GPU runtime is **not** bundled — on first **Start** with `device=cuda` the app downloads
 cuBLAS/cuDNN once into your user data folder, which keeps the build small. Pushing a `v*` tag

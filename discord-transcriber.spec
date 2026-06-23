@@ -53,7 +53,7 @@ hiddenimports += [
 # at runtime; the app falls back to config.py DEFAULTS when it is absent.
 datas += [
     ("src/overlay.js", "."),
-    ("src/ui", "ui"),
+    ("src/ui/dist", "ui/dist"),
     ("src/_stubs", "_stubs"),     # av stub (pkg_setup puts it on sys.path when PyAV is absent)
     ("assets", "assets"),
 ]

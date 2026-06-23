@@ -403,46 +403,68 @@ def start_tray(window):
 
 
 # ----------------------------------------------------------------------------- gui mode
-def start_dev_reload(window):
-    """Dev-only hot reload: when a UI file changes, reload the webview (set VT_DEV=1).
-    Vanilla full-reload — no toolchain — the js_api bridge and `pywebviewready` re-fire on reload."""
-    import time
-    if os.environ.get("VT_DEV") != "1" or getattr(sys, "frozen", False):
-        return
-    watched = [paths.resource("ui", "index.html"), paths.resource("ui", "app.js"),
-               paths.resource("ui", "styles.css")]  # styles.css optional; missing files are ignored
+def run_dev_watch(args):
+    if getattr(sys, "frozen", False):
+        return run_gui()
+    try:
+        from watchfiles import watch
+    except Exception as e:
+        print("[dev] watchfiles is required for backend reload: %s" % e)
+        print("[dev] install requirements or run without --dev-watch")
+        return 1
 
-    def snapshot():
-        snap = {}
-        for p in watched:
+    src_dir = paths.resource_dir()
+    ui_dir = os.path.abspath(paths.resource("ui"))
+    child_args = [sys.executable, os.path.join(src_dir, "app.py")] + list(args)
+    env = os.environ.copy()
+    env["VT_DEV"] = "1"
+
+    while True:
+        proc = subprocess.Popen(child_args, cwd=src_dir, env=env)
+        print("[dev] backend watcher started pid %s" % proc.pid)
+        try:
+            for changes in watch(src_dir, rust_timeout=1000, yield_on_timeout=True):
+                if proc.poll() is not None:
+                    return proc.returncode
+                if not changes:
+                    continue
+                restart = False
+                for _, changed in changes:
+                    changed = os.path.abspath(changed)
+                    if changed.startswith(ui_dir + os.sep):
+                        continue
+                    if changed.endswith(".py"):
+                        restart = True
+                        break
+                if restart:
+                    print("[dev] Python changed, restarting app")
+                    try:
+                        proc.terminate()
+                        proc.wait(timeout=5)
+                    except Exception:
+                        try:
+                            proc.kill()
+                        except Exception:
+                            pass
+                    break
+        except KeyboardInterrupt:
             try:
-                snap[p] = os.path.getmtime(p)
-            except OSError:
-                snap[p] = 0
-        return snap
-
-    def loop():
-        last = snapshot()
-        while True:
-            time.sleep(0.4)
-            cur = snapshot()
-            if cur != last:
-                last = cur
-                try:
-                    window.evaluate_js("window.location.reload()")
-                    print("[dev] UI changed -> reloaded")
-                except Exception as e:
-                    print("[dev] reload failed: %s" % e)
-    threading.Thread(target=loop, daemon=True).start()
-    print("[dev] hot reload watching ui/ (VT_DEV=1)")
+                proc.terminate()
+            except Exception:
+                pass
+            return 0
 
 
 def run_gui():
     import webview
     api = Api(force_setup="--setup" in sys.argv)
+    if os.environ.get("VT_DEV") == "1" and not getattr(sys, "frozen", False):
+        url = "http://localhost:5173"
+    else:
+        url = paths.resource("ui", "dist", "index.html")
     window = webview.create_window(
         "Discord Live Transcriber",
-        url=paths.resource("ui", "index.html"),
+        url=url,
         js_api=api, width=860, height=760, min_size=(640, 560),
         background_color="#1e1f22")
 
@@ -452,7 +474,6 @@ def run_gui():
 
     def setup():
         start_tray(window)
-        start_dev_reload(window)
     try:
         webview.start(setup, icon=icon_path())   # icon arg supported on newer pywebview
     except TypeError:
@@ -463,6 +484,9 @@ def main():
     if "--cleanup-overlay" in sys.argv:
         n = cleanup_overlays(print)
         print("[ui] overlay cleanup complete (%d client(s))" % n)
+    elif "--dev-watch" in sys.argv:
+        args = [a for a in sys.argv[1:] if a != "--dev-watch"]
+        raise SystemExit(run_dev_watch(args))
     elif "--backend" in sys.argv:
         run_backend()
     else:

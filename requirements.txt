@@ -11,6 +11,7 @@ pefile>=2023.2.7
 
 # Desktop app (GUI + tray)
 pywebview>=5.0
+watchfiles>=1.0
 pystray>=0.19
 pillow>=10.0
 
