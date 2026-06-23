@@ -9,6 +9,7 @@
   ::-webkit-scrollbar-thumb:hover { background:#4f535b; background-clip:padding-box; }
   ::-webkit-scrollbar-corner { background:transparent; }
   html, body { height:100%; }
+  #app { display:contents; }
   body { margin:0; font:13px/1.45 "gg sans",Segoe UI,system-ui,sans-serif; background:var(--bg); color:var(--txt);
          display:flex; flex-direction:column; height:100vh; overflow:hidden; }
   header { display:flex; align-items:center; gap:12px; padding:10px 14px; background:var(--panel);

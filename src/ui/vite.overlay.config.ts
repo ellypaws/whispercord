@@ -10,7 +10,7 @@ export default defineConfig({
     emptyOutDir: false,
     cssCodeSplit: false,
     lib: {
-      entry: path.resolve(__dirname, "overlay", "overlay.ts"),
+      entry: path.resolve(__dirname, "overlay", "overlay.tsx"),
       name: "VtOverlay",
       formats: ["iife"],
       fileName: () => "overlay.js",

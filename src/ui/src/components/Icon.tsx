@@ -19,3 +19,4 @@ export function Icon({ name, className = "" }: IconProps) {
     />
   );
 }
+

@@ -1,4 +1,10 @@
 // @ts-nocheck
+import { OVERLAY_EVENT } from "../../shared/events";
+import { svgIcon } from "../../shared/icons";
+import { keywordRegex } from "../../shared/keywords";
+import { SOUND_EVENT_RE } from "../../shared/sounds";
+import { colorFor, markerAvatar as emojiAvatar, speakerDisplay } from "../../shared/speakers";
+
 // BetterDiscord-free overlay injected into Discord's renderer via CDP.
 // Subtitles (activity-based scale + live cursor + keyword alerts) + scrollable transcript log + status pills.
 // Settings come from window.__VT_CONFIG (set by the orchestrator before injection).
@@ -28,31 +34,8 @@
   const ALERT_COLOR = AL.highlight || "#f04747";
   const LOG_MAX = 800;
 
-  // ---- inline Lucide icons (offline; 24x24 stroke) ----
-  const LU = {
-    "log-in": '<path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" x2="3" y1="12" y2="12"/>',
-    "log-out": '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/>',
-    "mic": '<path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/>',
-    "mic-off": '<line x1="2" x2="22" y1="2" y2="22"/><path d="M18.89 13.23A7.12 7.12 0 0 0 19 12v-2"/><path d="M5 10v2a7 7 0 0 0 12 5"/><path d="M15 9.34V5a3 3 0 0 0-5.68-1.33"/><path d="M9 9v3a3 3 0 0 0 5.12 2.12"/><line x1="12" x2="12" y1="19" y2="22"/>',
-    "headphones": '<path d="M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a9 9 0 0 1 18 0v7a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3"/>',
-    "headphones-off": '<line x1="2" x2="22" y1="2" y2="22"/><path d="M7 4.17A9 9 0 0 1 21 12v7a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3"/><path d="M3 12v7a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3"/>',
-    "volume-2": '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>',
-    "volume-x": '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="22" x2="16" y1="9" y2="15"/><line x1="16" x2="22" y1="9" y2="15"/>',
-    "video": '<path d="m22 8-6 4 6 4V8Z"/><rect width="14" height="12" x="2" y="6" rx="2" ry="2"/>',
-    "video-off": '<path d="M10.66 6H14a2 2 0 0 1 2 2v2.34l1 1L22 8v8"/><path d="M16 16a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h2l10 10Z"/><line x1="2" x2="22" y1="2" y2="22"/>',
-    "screen-share": '<path d="M13 3H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-3"/><path d="M8 21h8"/><path d="M12 17v4"/><path d="m17 8 5-5"/><path d="M17 3h5v5"/>',
-    "screen-share-off": '<path d="M13 3H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h7"/><path d="M8 21h8"/><path d="M12 17v4"/><path d="m22 3-5 5"/><path d="m17 3 5 5"/>',
-    "lock": '<rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
-    "lock-open": '<rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/>',
-  };
-  const icon = (name) => '<svg class="vt-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + (LU[name] || "") + "</svg>";
-  const EVENT = {
-    joined: ["log-in", "joined", "#43b581"], left: ["log-out", "left", "#f04747"],
-    muted: ["mic-off", "muted", "#f04747"], unmuted: ["mic", "unmuted", "#43b581"],
-    deafened: ["headphones-off", "deafened", "#f04747"], undeafened: ["headphones", "undeafened", "#43b581"],
-    video_on: ["video", "turned camera on", "#5865f2"], video_off: ["video-off", "turned camera off", "#b5bac1"],
-    stream_on: ["screen-share", "started streaming", "#5865f2"], stream_off: ["screen-share-off", "stopped streaming", "#b5bac1"],
-  };
+  const icon = (name) => svgIcon(name, "vt-ico");
+  const EVENT = OVERLAY_EVENT;
 
   // remove any prior overlay styles (incl. old un-id'd ones with the stale fade mask)
   document.querySelectorAll("style").forEach((s) => { if (s.id !== "vt-style" && /\.vt-container\s*\{/.test(s.textContent || "")) s.remove(); });
@@ -131,22 +114,9 @@
     .vt-assign .va-clear .vt-ico{width:14px;height:14px}`;
   document.head.appendChild(style);
 
-  const colorFor = (id) => { let h = 0; for (const c of String(id)) h = (h * 31 + c.charCodeAt(0)) >>> 0; return `hsl(${h % 360},65%,72%)`; };
-  // mirror the desktop transcript: undetected speakers get a stable emoji + the short id, on the
-  // gray default avatar; resolved (incl. manually-named) speakers keep their name/avatar.
-  const UNK_EMOJI = ["🦊","🐢","🦉","🦋","🐙","🦔","🦫","🐝","🦎","🐳","🦜","🐊","🦒","🦓","🦩","🦦","🐺","🦡","🐿️","🦃","🦚","🐌","🐠","🦂"];
-  const emojiFor = (id) => { let h = 0; for (const c of String(id)) h = (h * 31 + c.charCodeAt(0)) >>> 0; return UNK_EMOJI[h % UNK_EMOJI.length]; };
-  const unknownLabel = (id) => "Unknown " + String(id).slice(-5);   // emoji moves to the avatar
-  const emojiAvatar = (id) => "data:image/svg+xml;charset=utf-8," + encodeURIComponent(
-    '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40"><rect width="40" height="40" rx="20" fill="#3a3c43"/>'
-    + '<text x="50%" y="52%" dominant-baseline="central" text-anchor="middle" font-size="22">' + emojiFor(id) + '</text></svg>');
-  const speakerDisplay = (m) => (m.resolved === false)
-    ? { name: unknownLabel(m.userId), avatar: emojiAvatar(m.userId), locked: !!m.locked }
-    : { name: m.name || "unknown", avatar: (m.avatar || emojiAvatar(m.userId)), locked: !!m.locked };
   // whole-word keyword match, so "elly" doesn't fire on "belly"
   const _kwReCache = {};
-  const kwRe = (k) => _kwReCache[k] || (_kwReCache[k] =
-    new RegExp("(?<!\\w)" + k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "(?!\\w)", "gi"));
+  const kwRe = (k) => _kwReCache[k] || (_kwReCache[k] = keywordRegex(k));
   const matchKeyword = (t) => {
     if (!KEYWORDS.length || !t) return null;
     for (const k of KEYWORDS) { const re = kwRe(k); re.lastIndex = 0; if (re.test(t)) return k; }
@@ -154,7 +124,7 @@
   };
   // Whisper sound events ([laughs], [LAUGHTER], (claps), *Nyuh*, ♪music♪) -> .vt-sound spans; the
   // surrounding speech still gets keyword <mark>s.
-  const SOUND_RE = /[\[(*♪][^\][()*♪]*[\])*♪]/g;
+  const SOUND_RE = SOUND_EVENT_RE;
   function setText(el, text, kw) {
     el.textContent = "";
     const t = text || "";
