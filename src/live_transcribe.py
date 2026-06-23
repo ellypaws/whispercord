@@ -1060,9 +1060,12 @@ def mapping_thread():
             with lock:
                 self_gate[client] = open_
             key = "self:" + client
-            if open_ and key not in src2user:
-                sid = next(iter(self_rpc_ids), None)
-                info = user_cache.get(sid) if sid else None
+            # Re-assert (not just set-once): if anything bound the local mic to a non-self user,
+            # correct it back. self id is authoritative here (RPC), so the mic is always 'me'.
+            sid = next(iter(self_rpc_ids), None)
+            cur = (src2user.get(key) or {}).get("userId")
+            if open_ and sid and key not in manual_assign and cur != sid:
+                info = user_cache.get(sid)
                 if info:
                     src2user[key] = {**info, "userId": sid}
         else:
@@ -1072,7 +1075,7 @@ def mapping_thread():
         # --- native ssrc -> userId binding ---
         with lock:
             active = [s for s, t in last_frame.items()
-                      if now - t < 0.4 and src_client.get(s) == client]
+                      if now - t < 0.4 and src_client.get(s) == client and not s.startswith("self:")]
             ssrcs = {s: src_ssrc.get(s) for s in active}
             native_ssrcs = [k[1] for k in native_bind if k[0] == client]
         sk = client_scripts.get(client)          # feed audio ssrcs so the hook pins remote_ssrc_
@@ -1264,15 +1267,18 @@ def mapping_thread():
                 with lock:
                     self_gate[client] = open_
                 key = "self:" + client
-                if open_ and key not in src2user and sst:
-                    info = user_cache.get(sst["selfId"])
+                sid = sst.get("selfId") if sst else None
+                cur = (src2user.get(key) or {}).get("userId")
+                # Re-assert: correct the mic back to 'me' if correlation bound it to another user.
+                if open_ and sid and key not in manual_assign and cur != sid:
+                    info = user_cache.get(sid)
                     if not info:
                         try:
-                            info = user_info(c, sst["selfId"])
+                            info = user_info(c, sid)
                         except Exception:
                             info = None
                     if info:
-                        src2user[key] = info
+                        src2user[key] = {**info, "userId": sid}
             elif client:
                 with lock:
                     self_gate[client] = False
@@ -1366,8 +1372,11 @@ def mapping_thread():
             streamers = [uid for uid, v in (st0.get("vs_prev") or {}).items() if v.get("stream")]
 
             with lock:
+                # 'self:<client>' is the local mic; its identity is owned solely by the self-gate.
+                # It must never be a correlation/bind candidate, or it latches onto whoever is
+                # speaking remotely (binding your own line to another user).
                 active = [s for s, t in last_frame.items()
-                          if now - t < 0.4 and src_client.get(s) == client]
+                          if now - t < 0.4 and src_client.get(s) == client and not s.startswith("self:")]
                 run_len = {s: now - active_since.get(s, now) for s in active}
                 ssrcs = {s: src_ssrc.get(s) for s in active}
 
