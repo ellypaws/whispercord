@@ -1,9 +1,9 @@
 """Downloaded-model cache management, across every engine.
 
 Three engines keep their weights in three different places:
-  * Whisper (faster-whisper / CTranslate2) -> the standard Hugging Face hub cache
-  * Whisper (whisper.cpp GGML)             -> whispercpp_setup.models_dir()
-  * Parakeet (sherpa-onnx)                 -> sherpa_setup.models_dir()
+  * Whisper (CTranslate2/CUDA + CPU)       -> the standard Hugging Face hub cache
+  * Whisper (whisper.cpp GGML/Vulkan + AMD HIP) -> whispercpp_setup.models_dir()
+  * Parakeet (sherpa-onnx/CUDA + CPU)      -> sherpa_setup.models_dir()
 
 For CTranslate2 we operate on the SAME HF cache faster-whisper uses (not a private folder) so
 nothing is ever re-downloaded because of this app, and switching models is free. `is_cached`
@@ -82,7 +82,7 @@ def _ct2_models():
         if "whisper" not in repo.lower():                    # ignore unrelated HF models
             continue
         name = repo2name.get(repo, repo)
-        out.append({"name": name, "kind": "ct2", "engine": "Whisper (CTranslate2)",
+        out.append({"name": name, "kind": "ct2", "engine": "Whisper (CTranslate2/CUDA + CPU)",
                     "repo": repo, "size_mb": _mb(_dir_size(d)), "id": "ct2:" + name})
     return out
 
@@ -102,7 +102,7 @@ def _ggml_models():
             sz = os.path.getsize(p)
         except OSError:
             sz = 0
-        out.append({"name": name, "kind": "ggml", "engine": "Whisper (whisper.cpp GGML)",
+        out.append({"name": name, "kind": "ggml", "engine": "Whisper (whisper.cpp GGML/Vulkan + AMD HIP)",
                     "size_mb": _mb(sz), "id": "ggml:" + name})
     return out
 
@@ -124,7 +124,7 @@ def _parakeet_models():
         sz = _dir_size(d)
         if sz < 1_000_000:                                   # skip empty/partial folders
             continue
-        out.append({"name": name, "kind": "parakeet", "engine": "Parakeet (sherpa-onnx)",
+        out.append({"name": name, "kind": "parakeet", "engine": "Parakeet (sherpa-onnx/CUDA + CPU)",
                     "size_mb": _mb(sz), "id": "parakeet:" + name})
     return out
 

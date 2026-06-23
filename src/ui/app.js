@@ -1145,7 +1145,7 @@ function openSetupWizard(manual) {
       { id: "whisper", name: "Whisper",
         points: ["Most accurate, best for noisy calls", "99 languages, or pin one", "Sound captions like [laughs], (applause)", "Any GPU (NVIDIA, AMD, Intel) or CPU"] },
       { id: "parakeet", name: "NeMo Parakeet",
-        points: ["Fast and light on memory", "25 European languages, auto-detected", "Fully offline; NVIDIA GPU or CPU"] },
+        points: ["Fast and light on memory", "25 European languages, auto-detected", "Runs on CPU or NVIDIA GPU"] },
     ];
     defs.forEach((d) => { d.tag = d.id === rec ? "Recommended" : ""; });   // badge follows the hardware fit
     defs.sort((a, b) => (b.id === rec) - (a.id === rec));                  // recommended card first
