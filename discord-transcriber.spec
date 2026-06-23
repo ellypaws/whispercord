@@ -2,16 +2,17 @@
 # PyInstaller spec for the Discord Live Transcriber desktop wrapper.
 #
 #   build:   pyinstaller discord-transcriber.spec --noconfirm
-#   output:  dist/DiscordTranscriber/DiscordTranscriber.exe   (onedir; see ONEFILE below)
+#   output:  dist/DiscordTranscriber.exe   (always a single self-contained .exe)
+#
+# This build is ALWAYS onefile: one .exe and nothing else. No files are ever dropped next to
+# the exe — all user-writable data (config.json) and downloaded runtimes (CUDA, sherpa, GGML
+# models) live in the per-user data dir (see src/paths.py: %APPDATA%\whispercord on Windows).
 #
 # The CUDA libraries (cuBLAS/cuDNN) are NOT bundled — they're downloaded on first run by
-# cuda_setup.py into a local cuda/ folder. This keeps the distributable small (~hundreds of
+# cuda_setup.py into the per-user cache dir. This keeps the distributable small (~hundreds of
 # MB instead of ~4 GB); the GPU runtime download happens once on the target machine.
 
-import os
 from PyInstaller.utils.hooks import collect_all
-
-ONEFILE = os.environ.get("VT_ONEFILE", "0") == "1"  # set VT_ONEFILE=1 for a single .exe (slow first launch)
 
 datas, binaries, hiddenimports = [], [], []
 
@@ -49,8 +50,8 @@ hiddenimports += [
 ]
 
 # Our own source + resources (entry script lives in src/).
-# config.json is intentionally NOT bundled — it is user-writable data created next to the exe
-# at runtime; the app falls back to config.py DEFAULTS when it is absent.
+# config.json is intentionally NOT bundled — it is user-writable data created in the per-user
+# data dir at runtime (paths.data); the app falls back to config.py DEFAULTS when it is absent.
 datas += [
     ("src/overlay.js", "."),
     ("src/ui/dist", "ui/dist"),
@@ -76,18 +77,10 @@ pyz = PYZ(a.pure)
 
 ICON = "assets/icon.ico"
 
-if ONEFILE:
-    exe = EXE(
-        pyz, a.scripts, a.binaries, a.datas, [],
-        name="DiscordTranscriber", debug=False, strip=False, upx=False,
-        console=False, disable_windowed_traceback=False, icon=ICON,
-    )
-else:
-    exe = EXE(
-        pyz, a.scripts, [], exclude_binaries=True,
-        name="DiscordTranscriber", debug=False, strip=False, upx=False,
-        console=False, disable_windowed_traceback=False, icon=ICON,
-    )
-    coll = COLLECT(
-        exe, a.binaries, a.datas, strip=False, upx=False, name="DiscordTranscriber",
-    )
+# Always onefile: a single self-contained .exe, never a onedir folder. Everything (binaries +
+# bundled datas) is packed into the exe; nothing is emitted alongside it.
+exe = EXE(
+    pyz, a.scripts, a.binaries, a.datas, [],
+    name="DiscordTranscriber", debug=False, strip=False, upx=False,
+    console=False, disable_windowed_traceback=False, icon=ICON,
+)

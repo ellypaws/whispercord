@@ -40,9 +40,15 @@ jobs:
           grep -n '^_STAMP' src/version.py
 
       - name: Build (single .exe)
-        env:
-          VT_ONEFILE: "1"
         run: pyinstaller discord-transcriber.spec --noconfirm
+
+      - name: Assert single-file output (no files dropped beside the exe)
+        shell: pwsh
+        run: |
+          if (Test-Path dist/DiscordTranscriber) { throw "onedir folder present - build is not strictly onefile" }
+          $extra = Get-ChildItem dist -File | Where-Object { $_.Name -ne 'DiscordTranscriber.exe' }
+          if ($extra) { throw "unexpected files in dist next to the exe: $($extra.Name -join ', ')" }
+          Write-Host "OK: dist contains only DiscordTranscriber.exe"
 
       - name: Name the exe
         shell: pwsh

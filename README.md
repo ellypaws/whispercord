@@ -138,8 +138,7 @@ editable from **Settings**, but here are the keys:
 ## Build it yourself
 
 ```bat
-build.bat                     :: onedir folder for local testing
-set VT_ONEFILE=1 && build.bat  :: single DiscordTranscriber.exe (what releases ship)
+build.bat   :: single DiscordTranscriber.exe in dist\ (same as what releases ship)
 ```
 
 `build.bat` runs the frontend build before PyInstaller so `src\ui\dist` and
