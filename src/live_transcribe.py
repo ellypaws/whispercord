@@ -227,6 +227,7 @@ src_client = {}                                # src -> client exe name (e.g. 'd
 src_ssrc = {}                                  # src -> int ssrc read from the native ChannelReceive
 native_bind = {}                               # (client, ssrc) -> userId, from the native ConnectUser hook
                                                # (authoritative; works with no webpack/BetterDiscord/CDP)
+native_table_t = {}                            # client -> last native-roster memory scan ts (collectTable)
 native_speaking = {}                           # client -> {userId: last_ts} from SetRemoteUserSpeaking hook
 native_self = {}                               # client -> {"muted":bool,"deaf":bool} from SetSelf* hooks
 src_kind = {}                                  # src -> 'voice' | 'stream' (screenshare/Go Live audio)
@@ -417,6 +418,7 @@ JS = r"""
 let MOD = null;
 let SSRC_OFF = -1;          // located offset of remote_ssrc_ inside ChannelReceive (auto-found)
 let WANT = null;           // {ssrc:1} set of valid audio ssrcs, used to locate SSRC_OFF
+let LAST_RECV = null;      // most recent ChannelReceive* (BFS root for the native roster scan)
 function modpath() {
   MOD = Process.enumerateModules().find(m => /discord_voice/i.test(m.name)) || null;
   return MOD ? MOD.path : null;
@@ -445,6 +447,45 @@ function readStdString(p) {   // MSVC std::string: data inline (SSO) when capaci
     if (n < 0 || n > 64) return null;
     return data.readUtf8String(n);
   } catch (e) { return null; }
+}
+function isSnowflake(s) {     // a Discord id: 17-19 ASCII digits, no leading zero
+  if (!s) return false;
+  const n = s.length;
+  if (n < 17 || n > 19) return false;
+  if (s.charCodeAt(0) === 48) return false;
+  for (let i = 0; i < n; i++) { const c = s.charCodeAt(i); if (c < 48 || c > 57) return false; }
+  return true;
+}
+function collectRoster(root, depth, maxNodes) {
+  // Native ssrc->userId for EVERYONE in the call - including users already present before we hooked
+  // (ConnectUser only fires on join, so it misses them). BFS the call's object graph from a live
+  // ChannelReceive looking for a user entry: a u32 ssrc whose userId std::string sits at +0x38.
+  // Anchored on the (ssrc value + self-validating snowflake) pair, NOT on a hardcoded struct path,
+  // so a Discord update can't silently break it. Off the audio thread (called via rpc).
+  const out = {}; const seen = {}; let n = 0;
+  const q = [[root, depth]];
+  while (q.length) {
+    const it = q.shift(); const base = it[0], d = it[1];
+    const k = base.toString(); if (seen[k]) continue; seen[k] = 1; if (++n > maxNodes) break;
+    for (let o = 0; o < 0x400; o += 4) {
+      let v; try { v = base.add(o).readU32(); } catch (e) { break; }
+      if (v > 1000 && v < 0xffffffff) {
+        const s = readStdString(base.add(o + 0x38));
+        if (isSnowflake(s)) { out[v >>> 0] = s; WANT = WANT || {}; WANT[v >>> 0] = 1; }
+      }
+    }
+    if (d <= 0) continue;
+    for (let o = 0; o < 0x400; o += 8) {
+      let p; try { p = base.add(o).readPointer(); } catch (e) { continue; }
+      if (p.isNull()) continue; try { p.readU8(); } catch (e) { continue; }
+      q.push([p, d - 1]);
+    }
+  }
+  return out;
+}
+function collectTable() {     // rpc entry: returns {ssrc: userId} scanned from the live call graph
+  if (!LAST_RECV) return {};
+  try { return collectRoster(LAST_RECV, 6, 8000); } catch (e) { return {}; }
 }
 function installBind(cu, du) {
   // Authoritative SSRC<->userId straight from discord_voice.node, no renderer needed:
@@ -507,6 +548,7 @@ function install(rva) {
       const buf = new ArrayBuffer(outN * 2);
       const view = new Int16Array(buf);
       for (let i = 0; i < outN; i++) view[i] = base.add(i * 3 * ch * 2).readS16();  // L channel
+      LAST_RECV = this.src;                                // BFS root for the native roster scan
       // tag by client (multi-client safe) and by ssrc (native per-stream identity)
       send({ src: PID + ':' + this.src.toString(), client: CLIENT, ssrc: readSsrc(this.src) }, buf);
     }
@@ -514,7 +556,7 @@ function install(rva) {
   send({ ready: true, pid: PID, client: CLIENT });
   return true;
 }
-rpc.exports = { modpath: modpath, install: install, setSsrcs: setSsrcs, installBind: installBind, installEvents: installEvents };
+rpc.exports = { modpath: modpath, install: install, setSsrcs: setSsrcs, installBind: installBind, installEvents: installEvents, collectTable: collectTable };
 """
 
 def on_message(msg, data):
@@ -1480,6 +1522,27 @@ def mapping_thread():
             except Exception as e:
                 if DEBUG_BIND:
                     print("[native %s] %s" % (client, e))
+
+        # Native roster scan: bind users who were ALREADY in the call when we hooked. ConnectUser
+        # only fires on join, so it misses them; this reads ssrc->userId straight from the live
+        # call graph (userId std::string at ssrc+0x38). Throttled, off the audio thread (rpc call),
+        # for every hooked client (helps CDP clients too where the renderer ssrc map is absent).
+        for client in list(hooked_clients):
+            sk = client_scripts.get(client)
+            if not sk or now - native_table_t.get(client, 0) < 4.0:
+                continue
+            native_table_t[client] = now
+            try:
+                tbl = sk.exports_sync.collect_table()
+            except Exception:
+                tbl = None
+            if tbl:
+                with lock:
+                    for ssrc_str, uid in tbl.items():
+                        try:
+                            native_bind[(client, int(ssrc_str))] = uid
+                        except (ValueError, TypeError):
+                            pass
 
 # ---------------- transcription ----------------
 def purge_stale_sources(now, idle_s=600.0):
