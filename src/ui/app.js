@@ -1666,8 +1666,9 @@ async function pumpLog() {
 }
 
 // ---------- relay (transcript) ----------
-function connectRelay() {
-  const port = (CFG && CFG.relay_port) || 8765;
+async function connectRelay() {
+  let port = (CFG && CFG.relay_port) || 8765;
+  try { const live = await API.relay_port(); if (live) port = live; } catch (e) {}  // engine may auto-pick a free port
   // Detach the old socket's handlers before closing it, otherwise its onclose would schedule
   // yet another reconnect and keep racing the socket we're about to open.
   try { if (relay) { relay.onclose = null; relay.onmessage = null; relay.close(); } } catch (e) {}

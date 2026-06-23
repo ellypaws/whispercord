@@ -10,7 +10,7 @@ Env:
   WHISPER_MODEL   faster-whisper model (default 'small'; use 'large-v3' for best quality on a 3090)
   RELAY_PORT      websocket port (default 8765)
 """
-import os, sys, re, glob, time, json, threading, collections, asyncio, traceback
+import os, sys, re, glob, time, json, threading, collections, asyncio, traceback, socket
 
 # Windows consoles default to cp1252; transcripts contain emoji/CJK. Never crash on print.
 try:
@@ -589,9 +589,62 @@ def clip_wav(cid):
 # ---------------- relay (WebSocket) ----------------
 clients = set()
 relay_loop = None
+relay_sock = None              # the bound listening socket, handed to websockets.serve
+RELAY_PORT_TAG = "[[VTPORT]]"  # engine -> GUI: the port the relay actually bound (may differ from config)
+
+
+def _port_has_live_relay(port):
+    """Does a working engine relay already answer on this port? A successful WebSocket handshake
+    proves it's OUR relay (not some unrelated app that merely holds the port), so the caller can
+    tell 'another engine instance is running' apart from 'port taken by something else'."""
+    try:
+        from websockets.sync.client import connect as _ws_connect
+    except Exception:
+        return False                      # can't prove it's a relay -> treat as not-a-relay
+    try:
+        c = _ws_connect("ws://127.0.0.1:%d" % port, open_timeout=1.5, close_timeout=1.0)
+        c.close()
+        return True
+    except Exception:
+        return False
+
+
+def setup_relay_socket():
+    """Bind the relay's listening socket ONCE, before any Discord hook/overlay injection, resolving
+    port conflicts up front (hybrid policy):
+      - configured port free            -> bind it (normal case).
+      - busy AND a live relay answers    -> another engine is already running: exit, so we never
+                                            double-hook Discord (which destabilises the client).
+      - busy but nothing speaks the relay-> stale socket or unrelated app: bind a free OS port and
+                                            tell the GUI/overlay the new port via RELAY_PORT_TAG.
+    Runs in the engine's main thread so a single-instance conflict can sys.exit the whole process
+    (the GUI's bounded supervisor then shows a clear message instead of an endless 2s retry loop)."""
+    global RELAY_PORT, relay_sock
+    preferred = RELAY_PORT
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.bind(("127.0.0.1", preferred))
+    except OSError:
+        s.close()
+        if _port_has_live_relay(preferred):
+            print("[relay] port %d already has a running engine - exiting (only one engine can run "
+                  "at a time)." % preferred)
+            emit_progress("error", "Another copy of the engine is already running. Close it and try again.",
+                          done=True)
+            sys.exit(3)
+        print("[relay] port %d busy but no engine answered - binding a free port instead" % preferred)
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.bind(("127.0.0.1", 0))
+    relay_sock = s
+    RELAY_PORT = s.getsockname()[1]
+    print("%s%d" % (RELAY_PORT_TAG, RELAY_PORT), flush=True)   # GUI connects its panel to this port
+    print("[relay] ws://127.0.0.1:%d" % RELAY_PORT)
+
 
 def start_relay():
-    global relay_loop
+    global relay_loop, relay_sock
+    if relay_sock is None:         # supervised restart after the socket was closed: rebind
+        setup_relay_socket()
     async def handler(ws):
         clients.add(ws)
         print("[relay] overlay connected")
@@ -627,10 +680,11 @@ def start_relay():
         finally:
             clients.discard(ws)
     async def main():
-        global relay_loop
+        global relay_loop, relay_sock
         relay_loop = asyncio.get_event_loop()
-        async with websockets.serve(handler, "127.0.0.1", RELAY_PORT):
-            print("[relay] ws://127.0.0.1:%d" % RELAY_PORT)
+        async with websockets.serve(handler, sock=relay_sock):
+            relay_sock = None      # ownership transferred to the server; force a rebind on restart
+            print("[relay] listening on ws://127.0.0.1:%d" % RELAY_PORT)
             await asyncio.Future()
     asyncio.run(main())
 
@@ -1278,6 +1332,7 @@ def main():
                     traceback.print_exc()
                     time.sleep(2.0)
         threading.Thread(target=run, daemon=True, name=name).start()
+    setup_relay_socket()    # bind/resolve the port up front (may sys.exit on a single-instance clash)
     _supervised(start_relay, "relay")
     _supervised(mapping_thread, "mapping")
     _supervised(self_capture_thread, "self_capture")

@@ -62,6 +62,7 @@ def cleanup_overlays(log=None):
 
 # ----------------------------------------------------------------------------- engine control
 PROG_TAG = "[[VTPROG]]"
+PORT_TAG = "[[VTPORT]]"          # engine announces the relay port it actually bound (auto-fallback)
 PROG_IDLE = {"stage": "idle", "label": "", "pct": None, "done": True, "active": False}
 
 
@@ -74,6 +75,7 @@ class Engine:
         self.proc = None
         self.log = collections.deque(maxlen=600)
         self.progress = dict(PROG_IDLE)
+        self.relay_port = None                  # actual relay port the engine bound (from PORT_TAG)
         self._want_running = False              # True between start() and stop(); drives auto-restart
         self._restarts = collections.deque()    # monotonic timestamps of recent unexpected exits
 
@@ -88,6 +90,7 @@ class Engine:
 
     def _spawn(self):
         # show the banner immediately; the backend refines it as soon as it reports
+        self.relay_port = None      # re-learned from PORT_TAG (engine may auto-pick a free port)
         self.progress = {"stage": "starting", "label": "Starting engine…", "pct": None,
                          "done": False, "active": True}
         args = [sys.executable]
@@ -114,6 +117,12 @@ class Engine:
                         p = json.loads(line[len(PROG_TAG):])
                         p["active"] = not p.get("done")
                         self.progress = p
+                    except Exception:
+                        pass
+                    continue
+                if line.startswith(PORT_TAG):
+                    try:
+                        self.relay_port = int(line[len(PORT_TAG):])
                     except Exception:
                         pass
                     continue
@@ -243,6 +252,11 @@ class Api:
 
     def backend_status(self):
         return self.engine.running()
+
+    def relay_port(self):
+        # the port the engine actually bound (auto-fallback if the configured one was busy); None
+        # until the engine reports it -> the UI then uses the configured port.
+        return self.engine.relay_port
 
     def get_log(self):
         return "\n".join(self.engine.log)
