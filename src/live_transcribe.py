@@ -1687,10 +1687,16 @@ def mapping_thread():
                         if nm and native_names.get(uid) != nm:
                             native_names[uid] = nm                # CDP-free name source for resolve_user/roster
                             renamed.append(uid)
-                # re-broadcast any live source whose newly-known native name should now replace "user XXXX"
+                # re-broadcast any live source whose newly-known native name should now replace "user XXXX".
+                # Native harvest is graph-walked, not a named struct field, so it stays a FALLBACK: only
+                # fill placeholders, never clobber a name already resolved via CDP or a manual assign
+                # (matches resolve_user's placeholder-only rule and avoids a wrong harvest overriding a good name).
                 for uid in renamed:
                     for s, u in list(src2user.items()):
                         if u and u.get("userId") == uid and s not in manual_assign:
+                            cur = u.get("name") or ""
+                            if cur and not cur.startswith("user "):
+                                continue          # keep the already-resolved (CDP/real) name
                             with lock:
                                 src2user[s] = {**u, "name": native_names[uid]}
                             broadcast({"type": "rename", "userId": s,
