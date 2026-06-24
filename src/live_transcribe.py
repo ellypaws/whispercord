@@ -226,9 +226,8 @@ src2user = {}                                  # src -> {userId, name, avatar}
 src_client = {}                                # src -> client exe name (e.g. 'discordptb.exe')
 src_ssrc = {}                                  # src -> int ssrc read from the native ChannelReceive
 native_bind = {}                               # (client, ssrc) -> userId, from the native ConnectUser hook
-native_names = {}                              # userId -> display name harvested natively (no CDP) from the call graph
-                                               # (authoritative; works with no webpack/BetterDiscord/CDP)
 native_table_t = {}                            # client -> last native-roster memory scan ts (collectTable)
+name_state = {}                                # userId -> {"tier": int, "tries": int, "frozen": bool} (CDP resolver)
 native_speaking = {}                           # client -> {userId: last_ts} from SetRemoteUserSpeaking hook
 native_self = {}                               # client -> {"muted":bool,"deaf":bool} from SetSelf* hooks
 src_kind = {}                                  # src -> 'voice' | 'stream' (screenshare/Go Live audio)
@@ -267,6 +266,25 @@ def kind_enabled(src):
 def display_name(src, name):
     base = name or ("user " + src[-5:])
     return (base + SCREEN_LABEL) if kind_of(src) == "stream" else base
+
+
+# Name resolution tiers (higher = better/more specific). The CDP resolver keeps trying until a
+# user reaches their best reachable tier, then freezes - so names converge to the server nick /
+# global display name instead of collapsing to the bare username (the old regression), while
+# frozen users stop being re-queried so the per-tick CDP scrape doesn't drive UI lag.
+TIER_NONE, TIER_USERNAME, TIER_GLOBAL, TIER_NICK = 0, 1, 2, 3
+NAME_GIVEUP_TRIES = 12                          # ~60s at the 5s refresh cadence before accepting a non-nick name
+
+def name_tier(info):
+    if not info:
+        return TIER_NONE
+    if info.get("nick"):
+        return TIER_NICK
+    if info.get("globalName"):
+        return TIER_GLOBAL
+    if info.get("username"):
+        return TIER_USERNAME
+    return TIER_NONE
 
 
 def set_overlay_status(client, state, detail=""):
@@ -309,6 +327,7 @@ def broadcast_status():
 
 SELF = CFG.get("self_transcribe", {})          # own-voice transcription options
 SELF_SPEAK_GRACE_S = 1.0                       # Discord self-speaking can flicker between VAD polls
+SPEAK_FRAME_WINDOW_S = 0.5                      # a user with a native audio frame this recent = speaking now
 CDP_ENABLED = bool(CFG.get("cdp_enabled", False))  # opt-in CDP (auto-names + overlay); else native-only
 
 
@@ -480,22 +499,36 @@ function isHandle(s) {          // a Discord USERNAME handle: lowercase ascii, d
   }
   return true;
 }
-function collectRoster(root, depth, maxNodes) {
-  // Native ssrc->{userId,name} for EVERYONE in the call - including users already present before we
-  // hooked (ConnectUser only fires on join, so it misses them). BFS the call's object graph from a
-  // live ChannelReceive for a user entry: a u32 ssrc whose userId std::string sits at +0x38.
-  // Anchored on the (ssrc value + self-validating snowflake) pair, NOT a hardcoded struct path.
-  //
-  // NAME (no CDP): the user node carries the user's global DISPLAY name and the @username handle as
-  // std::strings at FIXED offsets. We don't hardcode them - we harvest every name-like string per
-  // node, then keep the offset that produced a valid name for the MOST users (cross-user consensus),
-  // separately for the display-name field and the handle field. A stray string at a random offset
-  // can't win the vote, so this stays false-positive-free like the userId anchor. (The server
-  // NICKNAME is a guild concept the voice module never sees - that comes from the CDP fallback.)
-  const recs = [];                  // [{ssrc, userId, disp:{off:name}, hand:{off:name}}]
-  const dispTally = {}, handTally = {};
-  const dispVals = {}, handVals = {};   // offset -> {value:1} set, to reject per-call CONSTANT strings
-  const seen = {}; let n = 0;
+function readVoiceTable(voice) {
+  // Read the durable roster vector at voiceState+0x500: 16-byte slots {user*, ref*}; per user the
+  // userId std::string is at user+0x20 and the audio ssrc at user+0x1e40 (validated live, PTB 1200).
+  // Self-validating: every slot must yield a snowflake uid, else we reject the whole table (so a
+  // wrong layout on a future build falls back to the BFS rather than emitting garbage).
+  try {
+    const begin = voice.add(0x500).readPointer();
+    const end = voice.add(0x508).readPointer();
+    if (begin.isNull() || end.isNull()) return null;
+    const bytes = end.sub(begin).toInt32();
+    if (bytes <= 0 || bytes > 0x4000 || (bytes % 0x10) !== 0) return null;   // sane vector size
+    const out = {}; let count = 0;
+    for (let p = begin; p.compare(end) < 0; p = p.add(0x10)) {
+      let u; try { u = p.readPointer(); } catch (e) { return null; }
+      if (u.isNull()) continue;
+      let uid = null, ssrc = 0;
+      try { uid = readStdString(u.add(0x20)); } catch (e) {}
+      try { ssrc = u.add(0x1e40).readU32(); } catch (e) {}
+      if (!isSnowflake(uid)) return null;                  // not the real layout -> reject, use BFS
+      if (ssrc) { WANT = WANT || {}; WANT[ssrc >>> 0] = 1; out[ssrc >>> 0] = { u: uid }; }
+      count++;
+    }
+    return count ? out : null;
+  } catch (e) { return null; }
+}
+function bfsRoster(root, depth, maxNodes) {
+  // Fallback only: BFS the call graph from a live ChannelReceive for (u32 ssrc, userId@+0x38) pairs.
+  // The +0x38 invariant is build-specific and known to emit garbage on some builds, so this is used
+  // ONLY when the deterministic table read fails. ssrc->userId only (no names exist natively).
+  const out = {}; const seen = {}; let n = 0;
   const q = [[root, depth]];
   while (q.length) {
     const it = q.shift(); const base = it[0], d = it[1];
@@ -504,20 +537,7 @@ function collectRoster(root, depth, maxNodes) {
       let v; try { v = base.add(o).readU32(); } catch (e) { break; }
       if (v > 1000 && v < 0xffffffff) {
         const s = readStdString(base.add(o + 0x38));
-        if (isSnowflake(s)) {
-          WANT = WANT || {}; WANT[v >>> 0] = 1;
-          const disp = {}, hand = {};
-          for (let no = 0; no < 0x400; no += 8) {          // names are 8-byte-aligned std::string fields
-            if (no === o + 0x38) continue;                 // skip the userId field itself
-            let nm; try { nm = readStdString(base.add(no)); } catch (e) { continue; }
-            if (!looksName(nm) || nm === s) continue;
-            if (isHandle(nm)) { hand[no] = nm; handTally[no] = (handTally[no] || 0) + 1;
-                                (handVals[no] = handVals[no] || {})[nm] = 1; }
-            else { disp[no] = nm; dispTally[no] = (dispTally[no] || 0) + 1;
-                   (dispVals[no] = dispVals[no] || {})[nm] = 1; }
-          }
-          recs.push({ ssrc: v >>> 0, userId: s, disp: disp, hand: hand });
-        }
+        if (isSnowflake(s)) { WANT = WANT || {}; WANT[v >>> 0] = 1; out[v >>> 0] = { u: s }; }
       }
     }
     if (d <= 0) continue;
@@ -527,28 +547,26 @@ function collectRoster(root, depth, maxNodes) {
       q.push([p, d - 1]);
     }
   }
-  // pick the offset valid for the most users, BUT only if its values actually vary per user (a
-  // real name field differs per person; a constant like a codec/region tag must never win). With a
-  // single user in the call we can't tell apart - accept it but it's just that one label.
-  const consensus = (tally, vals) => { let off = null, best = 0;
-    for (const o in tally) {
-      if (tally[o] <= best) continue;
-      const distinct = Object.keys(vals[o] || {}).length;
-      if (tally[o] >= 2 && distinct < 2) continue;     // multiple users, same string -> constant, reject
-      best = tally[o]; off = o;
-    }
-    return (off !== null && (best >= 2 || recs.length === 1)) ? off : null; };
-  const dispOff = consensus(dispTally, dispVals), handOff = consensus(handTally, handVals);
-  const out = {};
-  for (const r of recs) {
-    // prefer the global display name; fall back to the @username handle (matches nick -> global ->
-    // username preference, minus nick which only the CDP fallback can supply).
-    const nm = (dispOff !== null && r.disp[dispOff]) || (handOff !== null && r.hand[handOff]) || null;
-    out[r.ssrc] = nm ? { u: r.userId, n: nm } : { u: r.userId };
-  }
   return out;
 }
-function collectTable() {     // rpc entry: returns {ssrc: {u:userId, n?:name}} from the live call graph
+function collectRoster(root, depth, maxNodes) {
+  // Deterministic native ssrc->userId for EVERYONE in the call (incl. users present before we hooked,
+  // which ConnectUser misses) with NO rejoin and NO CDP: from a live ChannelReceive*,
+  //   voiceState = *(*(root + 0x38) + 0x8)   ->  read the +0x500 user table.
+  // readVoiceTable self-validates; on failure we fall back to the heuristic BFS.
+  try {
+    const a = root.add(0x38).readPointer();
+    if (!a.isNull()) {
+      const voice = a.add(0x8).readPointer();
+      if (!voice.isNull()) {
+        const t = readVoiceTable(voice);
+        if (t) return t;
+      }
+    }
+  } catch (e) {}
+  return bfsRoster(root, depth, maxNodes);
+}
+function collectTable() {     // rpc entry: returns {ssrc: {u:userId}} from the live call graph
   if (!LAST_RECV) return {};
   try { return collectRoster(LAST_RECV, 6, 8000); } catch (e) { return {}; }
 }
@@ -1071,14 +1089,6 @@ def mapping_thread():
                 user_cache[uid] = fresh; save_user_cache(); info = fresh
             elif fresh and not info:
                 info = fresh                        # keep the name now; don't cache until an avatar lands
-        # CDP-free name: if we still have nothing (or only a placeholder), use the natively-harvested
-        # display name so strangers are labelled without any renderer/CDP access.
-        nn = native_names.get(uid)
-        if nn:
-            if not info:
-                info = {"userId": uid, "name": nn, "avatar": None}
-            elif not info.get("name") or info.get("name", "").startswith("user "):
-                info = {**info, "name": nn}
         return info
 
     def cdp_nick(uid):
@@ -1179,8 +1189,18 @@ def mapping_thread():
         Names come from the cache / label-once (no auto-resolve without CDP). No correlation needed -
         native_bind is the authoritative ssrc->userId map."""
         # --- speaking (native) ---
+        # Primary signal is AUDIO-FRAME ARRIVAL: a user with a frame in the last SPEAK_FRAME_WINDOW_S
+        # is speaking now (we receive every frame tagged by ssrc -> uid via native_bind). The
+        # SetRemoteUserSpeaking hook is dead on some builds (e.g. PTB 1200), so union it in only as a
+        # bonus where it does fire - frames are the reliable source.
         with lock:
             spk = set((native_speaking.get(client) or {}).keys())
+            for s, t in last_frame.items():
+                if now - t < SPEAK_FRAME_WINDOW_S and src_client.get(s) == client and not s.startswith("self:"):
+                    sv = src_ssrc.get(s)
+                    uid = native_bind.get((client, sv)) if sv else None
+                    if uid:
+                        spk.add(uid)
             for u in spk:
                 last_speaking[(client, u)] = now
         spk_poll[client] = now
@@ -1237,7 +1257,7 @@ def mapping_thread():
             for uid in parts:
                 info = user_cache.get(uid)
                 members.append({"userId": uid,
-                                "name": (info or {}).get("name") or native_names.get(uid) or ("user " + uid[-4:]),
+                                "name": (info or {}).get("name") or ("user " + uid[-4:]),
                                 "avatar": (info or {}).get("avatar"),
                                 "stream": False, "mute": False, "deaf": False, "video": False})
             broadcast({"type": "roster", "client": client, "members": members})
@@ -1316,36 +1336,73 @@ def mapping_thread():
             broadcast({"type": "rename", "userId": src, "name": display_name(src, info["name"]),
                        "avatar": info.get("avatar"), "client": cl, "resolved": True, "locked": True})
 
-    def refresh_nicks():
-        # The nick is a guild concept neither the native scan nor a one-shot bind keeps fresh, so a
-        # user stays stuck on their global/username after the first resolve. Periodically upgrade any
-        # bound user to their SERVER NICKNAME via whatever CDP client can see it (BetterDiscord/PTB
-        # exposes GuildMemberStore). Only ever upgrades TO a nick - never downgrades, never flaps.
+    def resolve_components(uid):
+        # Merge user_info from EVERY live CDP client into the richest name components: the server nick
+        # can live on a different client (only BD/PTB exposes GuildMemberStore) than the globalName /
+        # avatar. First non-empty value per field wins.
+        best = None
+        for _p, _st in list(conns.items()):
+            try:
+                fresh = user_info(_st["cdp"], uid)
+            except Exception:
+                fresh = None
+            if not fresh:
+                continue
+            if best is None:
+                best = dict(fresh)
+            else:
+                for k in ("nick", "globalName", "username", "avatar"):
+                    if not best.get(k) and fresh.get(k):
+                        best[k] = fresh[k]
+        if best is not None:
+            best["name"] = best.get("nick") or best.get("globalName") or best.get("username") or best.get("name")
+        return best
+
+    def refresh_names():
+        # Resolve-until-definitive-then-freeze. For each bound user, chase the best reachable name
+        # (server nick > global display name > username) and UPGRADE ONLY - never downgrade/flap, so a
+        # late-loading profile can't collapse a good name back to the bare username (the old regression).
+        # Once a user reaches their nick - or we give up after NAME_GIVEUP_TRIES and accept a global/
+        # username - they FREEZE and are no longer re-queried, so the per-tick CDP cost falls to ~zero
+        # as the call settles. Only runs with CDP; native-only mode keeps cache/label-once names.
         if not (CDP_ENABLED and conns):
             return
         with lock:
-            targets = [(s, u.get("userId")) for s, u in src2user.items()
-                       if u and s not in manual_assign and not s.startswith("self:")
-                       and str(u.get("userId") or "").isdigit()]
-        seen = {}
-        for s, uid in targets:
-            if uid not in seen:                     # resolve this uid once, reuse across its sources
-                seen[uid] = cdp_nick(uid)
-            nick = seen[uid]
-            if not nick:
-                continue
-            with lock:
-                cur = src2user.get(s)
-                if not cur or cur.get("name") == nick:
+            targets, seen_uid = [], set()
+            for s, u in src2user.items():
+                if not u or s in manual_assign or s.startswith("self:"):
                     continue
-                src2user[s] = {**cur, "name": nick}
-                client = src_client.get(s)
-                ce = user_cache.get(uid) or {"userId": uid, "avatar": cur.get("avatar")}
-                user_cache[uid] = {**ce, "userId": uid, "name": nick}
-            save_user_cache()
-            broadcast({"type": "rename", "userId": s, "name": display_name(s, nick),
-                       "avatar": (src2user.get(s) or {}).get("avatar"), "client": client,
-                       "resolved": True, "locked": False})
+                uid = str(u.get("userId") or "")
+                if not uid.isdigit() or uid in seen_uid:
+                    continue
+                seen_uid.add(uid)
+                if not name_state.get(uid, {}).get("frozen"):
+                    targets.append(uid)
+        for uid in targets:
+            comp = resolve_components(uid)
+            st = name_state.setdefault(uid, {"tier": TIER_NONE, "tries": 0, "frozen": False})
+            st["tries"] += 1
+            tier = name_tier(comp)
+            if tier > st["tier"] and comp and comp.get("name"):
+                st["tier"] = tier
+                nm = comp["name"]
+                changed = []
+                with lock:
+                    ce = user_cache.get(uid) or {}
+                    user_cache[uid] = {**ce, "userId": uid, "name": nm,
+                                       "avatar": comp.get("avatar") or ce.get("avatar"), "tier": tier}
+                    for s, u in src2user.items():       # only touch sources whose visible name changes
+                        if u and u.get("userId") == uid and s not in manual_assign and u.get("name") != nm:
+                            src2user[s] = {**u, "name": nm, "avatar": comp.get("avatar") or u.get("avatar")}
+                            changed.append((s, src_client.get(s)))
+                save_user_cache()
+                for s, cl in changed:
+                    broadcast({"type": "rename", "userId": s, "name": display_name(s, nm),
+                               "avatar": (src2user.get(s) or {}).get("avatar"), "client": cl,
+                               "resolved": True, "locked": False})
+            # freeze at the nick, or after the giveup window once we hold any real name
+            if st["tier"] >= TIER_NICK or (st["tier"] >= TIER_USERNAME and st["tries"] >= NAME_GIVEUP_TRIES):
+                st["frozen"] = True
 
     last_probe = time.time()
     last_rpc = time.time()
@@ -1363,9 +1420,9 @@ def mapping_thread():
         if now - last_rpc > 30:                 # refresh self identity (a client may have (re)launched)
             last_rpc = now
             threading.Thread(target=seed_self_from_rpc, daemon=True).start()
-        if now - last_nick > 5:                 # upgrade bound users to their server nickname (CDP)
+        if now - last_nick > 5:                 # chase each bound user's best name (nick>global), then freeze
             last_nick = now
-            refresh_nicks()
+            refresh_names()
         if reinject_event.is_set():             # UI asked to re-inject overlays (no engine restart)
             reinject_event.clear()
             for _port, _st in list(conns.items()):
@@ -1672,37 +1729,18 @@ def mapping_thread():
             except Exception:
                 tbl = None
             if tbl:
-                renamed = []
+                # Deterministic ssrc->userId roster (voiceState+0x500), incl. users present before we
+                # hooked. Native struct carries NO name (proven), so this only updates the binding;
+                # names come from the CDP tier-aware resolver / cache.
                 with lock:
                     for ssrc_str, rec in tbl.items():
-                        # rec is {"u": userId, "n"?: name}; tolerate the old bare-string shape too
                         uid = rec.get("u") if isinstance(rec, dict) else rec
-                        nm = rec.get("n") if isinstance(rec, dict) else None
                         if not uid:
                             continue
                         try:
                             native_bind[(client, int(ssrc_str))] = uid
                         except (ValueError, TypeError):
                             continue
-                        if nm and native_names.get(uid) != nm:
-                            native_names[uid] = nm                # CDP-free name source for resolve_user/roster
-                            renamed.append(uid)
-                # re-broadcast any live source whose newly-known native name should now replace "user XXXX".
-                # Native harvest is graph-walked, not a named struct field, so it stays a FALLBACK: only
-                # fill placeholders, never clobber a name already resolved via CDP or a manual assign
-                # (matches resolve_user's placeholder-only rule and avoids a wrong harvest overriding a good name).
-                for uid in renamed:
-                    for s, u in list(src2user.items()):
-                        if u and u.get("userId") == uid and s not in manual_assign:
-                            cur = u.get("name") or ""
-                            if cur and not cur.startswith("user "):
-                                continue          # keep the already-resolved (CDP/real) name
-                            with lock:
-                                src2user[s] = {**u, "name": native_names[uid]}
-                            broadcast({"type": "rename", "userId": s,
-                                       "name": display_name(s, native_names[uid]),
-                                       "avatar": u.get("avatar"), "client": client,
-                                       "resolved": True, "locked": False})
 
 # ---------------- transcription ----------------
 def purge_stale_sources(now, idle_s=600.0):
