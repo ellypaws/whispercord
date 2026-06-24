@@ -27,13 +27,20 @@ export interface SpeakerDisplaySource {
   userId: string;
   name?: string;
   avatar?: string;
+  kind?: string;
   resolved?: boolean;
   locked?: boolean;
 }
 
+function streamName(name: string): string {
+  return name.replace(/\s+\(stream\)$/, "");
+}
+
 export function speakerDisplay(source: SpeakerDisplaySource) {
+  const stream = source.kind === "stream";
   if (source.resolved === false) {
-    return { name: unknownLabel(source.userId), avatar: markerAvatar(source.userId), locked: !!source.locked };
+    return { name: unknownLabel(source.userId), avatar: markerAvatar(source.userId), locked: !!source.locked, stream };
   }
-  return { name: source.name || "unknown", avatar: source.avatar || markerAvatar(source.userId), locked: !!source.locked };
+  const name = source.name || "unknown";
+  return { name: stream ? streamName(name) : name, avatar: source.avatar || markerAvatar(source.userId), locked: !!source.locked, stream };
 }

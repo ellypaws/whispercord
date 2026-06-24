@@ -49,6 +49,7 @@ import { colorFor, markerAvatar as emojiAvatar, speakerDisplay } from "../../sha
     .vt-avatar{width:34px;height:34px;border-radius:50%;flex:0 0 auto;background:#2b2d31}
     .vt-text{color:#fff;font-size:16px;line-height:1.3}
     .vt-name{font-weight:600;margin-right:6px}
+    .vt-name .vt-ico{width:12px;height:12px;opacity:.82;vertical-align:-1px;margin-left:2px}
     .vt-cursor{display:inline-block;color:#9bb7ff;margin-left:2px;animation:vt-blink 1s steps(2,jump-none) infinite}
     @keyframes vt-blink{0%,49%{opacity:1}50%,100%{opacity:.12}}
     @keyframes vt-in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
@@ -107,6 +108,8 @@ import { colorFor, markerAvatar as emojiAvatar, speakerDisplay } from "../../sha
     .vt-assign .va-item img{width:22px;height:22px;border-radius:50%;flex:0 0 22px;background:#2b2d31}
     .vt-assign .va-item span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}
     .vt-assign .va-item small{margin-left:auto;color:#949ba4;font-size:10px;flex:0 0 auto}
+    .vt-assign .va-stream{display:inline-flex;align-items:center}
+    .vt-assign .va-stream .vt-ico{width:14px;height:14px}
     .vt-assign .va-empty{color:#949ba4;font-size:11px;padding:6px;line-height:1.45}
     .vt-assign .va-input{width:100%;margin:4px 0;background:#1e1f22;border:1px solid rgba(255,255,255,.1);color:#e3e5e8;border-radius:5px;padding:6px 8px;font:inherit;box-sizing:border-box}
     .vt-assign .va-clear{display:flex;align-items:center;gap:6px;padding:6px;color:#f0b232;cursor:pointer;border-radius:6px;font-size:12px}
@@ -169,6 +172,12 @@ import { colorFor, markerAvatar as emojiAvatar, speakerDisplay } from "../../sha
   if (SHOW_SUBS) document.body.appendChild(container);
   const blocks = new Map(), order = [];
   let layoutTimer = null;
+  function setNameLabel(el, name, locked, stream, suffix) {
+    el.textContent = name || "unknown";
+    if (stream) el.insertAdjacentHTML("beforeend", " " + icon("screen-share"));
+    if (locked) el.insertAdjacentHTML("beforeend", " " + icon("lock"));
+    if (suffix) el.appendChild(document.createTextNode(suffix));
+  }
   function scheduleLayout(delay) {
     if (layoutTimer) clearTimeout(layoutTimer);
     layoutTimer = setTimeout(() => { layoutTimer = null; updateLayout(); }, Math.max(0, delay));
@@ -238,7 +247,7 @@ import { colorFor, markerAvatar as emojiAvatar, speakerDisplay } from "../../sha
     requestAnimationFrame(() => { el.style.opacity = "0"; el.style.transform = "translateY(-6px) scale(.96)"; });
     setTimeout(() => el.remove(), 320);
   }
-  function sub(uid, name, avatar, text, isFinal) {
+  function sub(uid, name, avatar, text, isFinal, stream) {
     if (!SHOW_SUBS) return;
     let b = blocks.get(uid);
     if (b && b.finalized) {
@@ -257,14 +266,14 @@ import { colorFor, markerAvatar as emojiAvatar, speakerDisplay } from "../../sha
       const img = document.createElement("img"); img.className = "vt-avatar"; if (avatar) img.src = avatar;
       img.onerror = () => { img.src = emojiAvatar(uid); };           // real avatar failed -> emoji
       const t = document.createElement("div"); t.className = "vt-text";
-      const nm = document.createElement("span"); nm.className = "vt-name"; nm.textContent = name || "unknown"; nm.style.color = colorFor(uid);
+      const nm = document.createElement("span"); nm.className = "vt-name"; setNameLabel(nm, name, false, stream, ""); nm.style.color = colorFor(uid);
       const body = document.createElement("span");
       const cur = document.createElement("span"); cur.className = "vt-cursor"; cur.textContent = "▍";
       t.append(nm, body, cur); el.append(img, t); container.appendChild(el);
       b = { el, body, cur, nm, img, timeout: null, finalized: false, alerted: false, lastActive: 0, committed: "", finalizedAt: 0 }; blocks.set(uid, b); order.push(uid);
     }
     touchBlock(uid, b);
-    if (name) b.nm.textContent = name;
+    if (name) setNameLabel(b.nm, name, false, stream, "");
     if (avatar && b.img && !b.img.src) b.img.src = avatar;
     // committed = earlier finalized utterances in this merge run; live = the in-progress one
     const shown = ((b.committed ? b.committed + " " : "") + (text || "")).trim();
@@ -305,7 +314,7 @@ import { colorFor, markerAvatar as emojiAvatar, speakerDisplay } from "../../sha
     else { pinned = false; if (!jumpTimer) jumpTimer = setTimeout(() => { if (!pinned) logJump.style.display = "block"; jumpTimer = null; }, 180); }
   });
   logJump.addEventListener("click", () => { pinned = true; logJump.style.display = "none"; lastAuto = Date.now(); logBody.scrollTop = logBody.scrollHeight; });
-  function log(name, uid, avatar, text, ts, locked) {
+  function log(name, uid, avatar, text, ts, locked, stream) {
     if (!SHOW_LOG) return;
     const kw = matchKeyword(text);
     history.push({ name, text, ts, alert: !!kw });
@@ -317,8 +326,7 @@ import { colorFor, markerAvatar as emojiAvatar, speakerDisplay } from "../../sha
     av.onload = () => { if (LOG_AUTOSCROLL && pinned) stickLog(); };   // keep pinned once avatar lays out
     const c = document.createElement("div"); c.className = "vtl-c";
     const t = document.createElement("span"); t.className = "vtl-t"; t.textContent = new Date(ts).toLocaleTimeString([], { hour12: false });
-    const n = document.createElement("span"); n.className = "vtl-n"; n.textContent = (kw ? "🔔 " : "") + (name || "unknown") + ":"; n.style.color = colorFor(uid);
-    if (locked) n.insertAdjacentHTML("beforeend", " " + icon("lock"));
+    const n = document.createElement("span"); n.className = "vtl-n"; setNameLabel(n, (kw ? "🔔 " : "") + (name || "unknown"), locked, stream, ":"); n.style.color = colorFor(uid);
     n.title = "Click to reassign"; n.style.cursor = "pointer";
     n.onclick = (e) => { e.stopPropagation(); openAssign(uid, n); };   // assignable, same picker as the desktop
     const b = document.createElement("span"); b.className = "vtl-tx"; b.dataset.text = text || ""; setText(b, text, kw);
@@ -364,7 +372,10 @@ import { colorFor, markerAvatar as emojiAvatar, speakerDisplay } from "../../sha
         const im = document.createElement("img"); im.src = u.avatar || emojiAvatar(u.userId);
         const sp = document.createElement("span"); sp.textContent = u.name || "user";
         it.append(im, sp);
-        if (u.stream) { const sm = document.createElement("small"); sm.textContent = "stream"; it.appendChild(sm); }
+        if (u.stream) {
+          const sm = document.createElement("small"); sm.className = "va-stream"; sm.title = "Streaming";
+          sm.innerHTML = icon("screen-share"); it.appendChild(sm);
+        }
         it.onclick = () => { sendAssign(src, { userId: u.userId }); closeAssign(); };
         list.appendChild(it);
       });
@@ -469,11 +480,11 @@ import { colorFor, markerAvatar as emojiAvatar, speakerDisplay } from "../../sha
       const esc = (window.CSS && CSS.escape) ? CSS.escape(m.userId) : m.userId;
       document.querySelectorAll('.vtl[data-uid="' + esc + '"]').forEach((r) => {
         const n = r.querySelector(".vtl-n");
-        if (n) { n.textContent = d.name + ":"; if (d.locked) n.insertAdjacentHTML("beforeend", " " + icon("lock")); }
+        if (n) setNameLabel(n, d.name, d.locked, d.stream, ":");
         const a = r.querySelector(".vtl-av"); if (a) a.src = d.avatar;
       });
       const b = blocks.get(m.userId);                       // also update an on-screen subtitle
-      if (b) { if (b.nm) b.nm.textContent = d.name; if (b.img) b.img.src = d.avatar; }
+      if (b) { if (b.nm) setNameLabel(b.nm, d.name, false, d.stream, ""); if (b.img) b.img.src = d.avatar; }
       return;
     }
     if (m.type !== "transcript") return;
@@ -490,8 +501,8 @@ import { colorFor, markerAvatar as emojiAvatar, speakerDisplay } from "../../sha
       return;
     }
     const d = speakerDisplay(m);
-    sub(m.userId, d.name, d.avatar, m.text, m.isFinal);
-    if (m.isFinal && m.text) log(d.name, m.userId, d.avatar, m.text, m.ts || Date.now(), d.locked);
+    sub(m.userId, d.name, d.avatar, m.text, m.isFinal, d.stream);
+    if (m.isFinal && m.text) log(d.name, m.userId, d.avatar, m.text, m.ts || Date.now(), d.locked, d.stream);
   }
 
   let ws = null, stopped = false;

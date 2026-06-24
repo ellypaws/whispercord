@@ -226,6 +226,7 @@ src2user = {}                                  # src -> {userId, name, avatar}
 src_client = {}                                # src -> client exe name (e.g. 'discordptb.exe')
 src_ssrc = {}                                  # src -> int ssrc read from the native ChannelReceive
 native_bind = {}                               # (client, ssrc) -> userId, from the native ConnectUser hook
+native_skind = {}                              # (client, ssrc) -> 'voice'|'stream', from the native roster scan
 native_table_t = {}                            # client -> last native-roster memory scan ts (collectTable)
 name_state = {}                                # userId -> {"tier": int, "tries": int, "frozen": bool} (CDP resolver)
 native_speaking = {}                           # client -> {userId: last_ts} from SetRemoteUserSpeaking hook
@@ -440,6 +441,7 @@ let MOD = null;
 let SSRC_OFF = -1;          // located offset of remote_ssrc_ inside ChannelReceive (auto-found)
 let WANT = null;           // {ssrc:1} set of valid audio ssrcs, used to locate SSRC_OFF
 let LAST_RECV = null;      // most recent ChannelReceive* (BFS root for the native roster scan)
+let RECV_SEEN = {};        // recvPtrStr -> lastSeenMs; distinct ChannelReceive*s for mic/stream split
 function modpath() {
   MOD = Process.enumerateModules().find(m => /discord_voice/i.test(m.name)) || null;
   return MOD ? MOD.path : null;
@@ -566,9 +568,89 @@ function collectRoster(root, depth, maxNodes) {
   } catch (e) {}
   return bfsRoster(root, depth, maxNodes);
 }
-function collectTable() {     // rpc entry: returns {ssrc: {u:userId}} from the live call graph
-  if (!LAST_RECV) return {};
-  try { return collectRoster(LAST_RECV, 6, 8000); } catch (e) { return {}; }
+function resolveVoice(recv) {   // ChannelReceive* -> its connection's voiceState (recv+0x38 -> +0x8)
+  try {
+    const a = recv.add(0x38).readPointer();
+    if (a.isNull()) return null;
+    const v = a.add(0x8).readPointer();
+    return v.isNull() ? null : v;
+  } catch (e) { return null; }
+}
+function readVoiceEntries(voice) {
+  // voiceState+0x500 roster -> [{ssrc, uid}], validated (every slot must be a snowflake uid, else the
+  // layout is wrong -> reject). Same table as readVoiceTable but returns the raw entries so the caller
+  // can compare rosters across connections (mic = main call voiceState, screenshare = a separate one).
+  try {
+    const begin = voice.add(0x500).readPointer();
+    const end = voice.add(0x508).readPointer();
+    if (begin.isNull() || end.isNull()) return null;
+    const bytes = end.sub(begin).toInt32();
+    if (bytes <= 0 || bytes > 0x4000 || (bytes % 0x10) !== 0) return null;
+    const out = [];
+    for (let p = begin; p.compare(end) < 0; p = p.add(0x10)) {
+      let u; try { u = p.readPointer(); } catch (e) { return null; }
+      if (u.isNull()) continue;
+      let uid = null, ssrc = 0;
+      try { uid = readStdString(u.add(0x20)); } catch (e) {}
+      try { ssrc = u.add(0x1e40).readU32(); } catch (e) {}
+      if (!isSnowflake(uid)) return null;
+      out.push({ uid: uid, ssrc: ssrc >>> 0 });
+    }
+    return out.length ? out : null;
+  } catch (e) { return null; }
+}
+function collectTable() {
+  // rpc entry: deterministic native ssrc -> {u:userId, kind:'voice'|'stream'} for the WHOLE call,
+  // mid-session, no rejoin, no CDP. Each ChannelReceive resolves to its connection's voiceState; mic
+  // receivers share the MAIN call voiceState while a watched Go Live's screenshare audio resolves to a
+  // SEPARATE voiceState (validated live vs CDP on PTB 1200). So voiceState IDENTITY classifies kind:
+  // the largest +0x500 roster is the main voice connection; any other is a stream/screenshare.
+  const states = [];                              // [{key, entries, typeVal}]
+  const seenV = {};
+  const now = Date.now();
+  for (const k of Object.keys(RECV_SEEN)) {
+    if (now - RECV_SEEN[k] > 30000) { delete RECV_SEEN[k]; continue; }   // drop stale receivers
+    let recv; try { recv = ptr(k); } catch (e) { delete RECV_SEEN[k]; continue; }
+    const v = resolveVoice(recv);
+    if (!v) continue;
+    const vk = v.toString();
+    if (seenV[vk]) continue;
+    const ents = readVoiceEntries(v);
+    if (!ents) continue;
+    seenV[vk] = 1;
+    // voiceState+0x1f0 is a connection-type scalar: ==1 on a stream (screenshare) connection, ==2 on
+    // the main voice connection (held across PTB 1200 + stable 9242, independent of roster size). Used
+    // only to break the tie when a stream is the ONLY audible connection; otherwise the roster-size
+    // rule below decides, so a mis-read can't override a confirmed main connection.
+    let typeVal = -1; try { typeVal = v.add(0x1f0).readU32() >>> 0; } catch (e) {}
+    states.push({ key: vk, entries: ents, typeVal: typeVal });
+  }
+  if (!states.length) {                           // fallback: old single-root path (all 'voice')
+    if (!LAST_RECV) return {};
+    try {
+      const t = collectRoster(LAST_RECV, 6, 8000);
+      const out = {};
+      for (const s in t) out[s] = { u: t[s].u, kind: "voice" };
+      return out;
+    } catch (e) { return {}; }
+  }
+  let main = states[0];                            // main voice = the largest roster
+  for (const st of states) if (st.entries.length > main.entries.length) main = st;
+  const multi = states.length > 1;
+  const out = {};
+  for (const st of states) {
+    // multiple connections: the non-main ones are streams (relative, CDP-validated). Single
+    // connection: trust the type scalar (==1 stream) so a lone watched stream still classifies; a
+    // lone talker (typeVal 2) stays voice.
+    const isStream = multi ? (st !== main) : (st.typeVal === 1);
+    const kind = isStream ? "stream" : "voice";
+    for (const e of st.entries) {
+      if (!e.ssrc) continue;
+      WANT = WANT || {}; WANT[e.ssrc >>> 0] = 1;
+      if (!out[e.ssrc >>> 0] || kind === "voice") out[e.ssrc >>> 0] = { u: e.uid, kind: kind };
+    }
+  }
+  return out;
 }
 function installBind(cu, du) {
   // Authoritative SSRC<->userId straight from discord_voice.node, no renderer needed:
@@ -642,8 +724,10 @@ function install(rva) {
         const stride = 3 * ch;                             // every 3rd 48k sample, L channel
         for (let i = 0; i < outN; i++) view[i] = inV[i * stride];
         LAST_RECV = this.src;                              // BFS root for the native roster scan
+        const rk = this.src.toString();
+        RECV_SEEN[rk] = Date.now();                        // track distinct receivers for mic/stream split
         // tag by client (multi-client safe) and by ssrc (native per-stream identity)
-        send({ src: PID + ':' + this.src.toString(), client: CLIENT, ssrc: readSsrc(this.src) }, buf);
+        send({ src: PID + ':' + rk, client: CLIENT, ssrc: readSsrc(this.src) }, buf);
       } catch (e) {}
     }
   });
@@ -670,6 +754,7 @@ def on_message(msg, data):
         with lock:
             for k in [k for k, v in native_bind.items() if k[0] == cl and v == uid]:
                 del native_bind[k]
+                native_skind.pop(k, None)
             native_speaking.get(cl, {}).pop(uid, None)
         return
     if p.get("speak"):                         # native SetRemoteUserSpeaking: remote speaking on/off
@@ -715,6 +800,7 @@ def _on_unhook(pid):
         with lock:                              # drop this client's native ssrc bindings + event state
             for k in [k for k in native_bind if k[0] == name]:
                 del native_bind[k]
+                native_skind.pop(k, None)
             native_speaking.pop(name, None)
             native_self.pop(name, None)
     if name:
@@ -1127,7 +1213,8 @@ def mapping_thread():
             nm = display_name(s, info["name"])
             print("[map] %s [%s] -> %s" % (s[-6:], client, nm))
             broadcast({"type": "rename", "userId": s, "name": nm, "avatar": info["avatar"],
-                       "client": client, "resolved": True, "locked": s in manual_assign})
+                       "client": client, "resolved": True, "locked": s in manual_assign,
+                       "kind": kind_of(s)})
 
     def set_kind(s, kind, client):
         """Change a source's voice/stream kind and re-broadcast its label if it's already
@@ -1140,7 +1227,7 @@ def mapping_thread():
         if info and info.get("userId"):
             broadcast({"type": "rename", "userId": s, "name": display_name(s, info["name"]),
                        "avatar": info.get("avatar"), "client": client,
-                       "resolved": True, "locked": s in manual_assign})
+                       "resolved": True, "locked": s in manual_assign, "kind": kind})
 
     def confirm_bind(s, uid, client, c, weight):
         """Accumulate naming evidence per source and bind to the identity with the MOST hits,
@@ -1207,6 +1294,8 @@ def mapping_thread():
             for s, t in last_frame.items():
                 if now - t < SPEAK_FRAME_WINDOW_S and src_client.get(s) == client and not s.startswith("self:"):
                     sv = src_ssrc.get(s)
+                    if sv and native_skind.get((client, sv)) == "stream":
+                        continue                       # screenshare audio is not the streamer speaking
                     uid = native_bind.get((client, sv)) if sv else None
                     if uid:
                         spk.add(uid)
@@ -1255,6 +1344,10 @@ def mapping_thread():
             uid = native_bind.get((client, sv)) if sv else None
             if uid:
                 native_kind.add(s)
+                # native mic-vs-screenshare (which connection's voiceState the ssrc lives on): tag Go
+                # Live audio 'stream' so it gets the suffix and skips the speaking/silence gate (it has
+                # no speaking user, so without this it was chopped every ~0.6s). No CDP needed.
+                set_kind(s, "stream" if native_skind.get((client, sv)) == "stream" else "voice", client)
                 confirm_bind(s, uid, client, None, NAME_VOTE_NATIVE)
 
         # --- roster: native participants (label-once names from cache) ~2s ---
@@ -1304,7 +1397,7 @@ def mapping_thread():
                 broadcast({"type": "rename", "userId": src,
                            "name": display_name(src, (src2user.get(src) or {}).get("name")),
                            "avatar": (src2user.get(src) or {}).get("avatar"), "client": cl,
-                           "resolved": bool(src2user.get(src)), "locked": False})
+                           "resolved": bool(src2user.get(src)), "locked": False, "kind": kind_of(src)})
                 continue
             uid, nm = req.get("userId"), req.get("name")
             # the real discord userId behind this source (for label-once persistence): explicit pick,
@@ -1343,7 +1436,8 @@ def mapping_thread():
                 continue
             print("[assign] %s -> %s (locked)" % (src[-6:], info["name"]))
             broadcast({"type": "rename", "userId": src, "name": display_name(src, info["name"]),
-                       "avatar": info.get("avatar"), "client": cl, "resolved": True, "locked": True})
+                       "avatar": info.get("avatar"), "client": cl, "resolved": True, "locked": True,
+                       "kind": kind_of(src)})
 
     def resolve_components(uid):
         # Merge user_info from EVERY live CDP client into the richest name components: the server nick
@@ -1408,7 +1502,7 @@ def mapping_thread():
                 for s, cl in changed:
                     broadcast({"type": "rename", "userId": s, "name": display_name(s, nm),
                                "avatar": (src2user.get(s) or {}).get("avatar"), "client": cl,
-                               "resolved": True, "locked": False})
+                               "resolved": True, "locked": False, "kind": kind_of(s)})
             # freeze at the nick, or after the giveup window once we hold any real name
             if st["tier"] >= TIER_NICK or (st["tier"] >= TIER_USERNAME and st["tries"] >= NAME_GIVEUP_TRIES):
                 st["frozen"] = True
@@ -1637,7 +1731,9 @@ def mapping_thread():
                     uid = ent.get("userId")
                 if uid:
                     native_kind.add(s)
-                    set_kind(s, "stream" if (ent and ent.get("kind") == "stream") else "voice", client)
+                    # screenshare/Go-Live audio: native (which connection the ssrc belongs to) OR CDP.
+                    is_stream = (native_skind.get((client, sv)) == "stream") or (ent and ent.get("kind") == "stream")
+                    set_kind(s, "stream" if is_stream else "voice", client)
                     confirm_bind(s, uid, client, c, NAME_VOTE_NATIVE)
             # (2) fallback ONLY for clients whose renderer stores are unreachable, so (1) gave no
             #     ssrc map: a source that runs continuously past the threshold while someone is
@@ -1740,16 +1836,21 @@ def mapping_thread():
             if tbl:
                 # Deterministic ssrc->userId roster (voiceState+0x500), incl. users present before we
                 # hooked. Native struct carries NO name (proven), so this only updates the binding;
-                # names come from the CDP tier-aware resolver / cache.
+                # names come from the CDP tier-aware resolver / cache. `kind` ('voice'|'stream') is the
+                # native mic-vs-screenshare signal (which connection's voiceState the ssrc belongs to).
                 with lock:
                     for ssrc_str, rec in tbl.items():
                         uid = rec.get("u") if isinstance(rec, dict) else rec
                         if not uid:
                             continue
                         try:
-                            native_bind[(client, int(ssrc_str))] = uid
+                            key = (client, int(ssrc_str))
                         except (ValueError, TypeError):
                             continue
+                        native_bind[key] = uid
+                        k = rec.get("kind") if isinstance(rec, dict) else None
+                        if k:
+                            native_skind[key] = k
 
 # ---------------- transcription ----------------
 def purge_stale_sources(now, idle_s=600.0):

@@ -1865,6 +1865,16 @@ export function bootDesktopController() {
     if (m.locked !== undefined) s.locked = m.locked;
   }
 
+  function streamDisplayName(name) {
+    return String(name || "").replace(/\s+\(stream\)$/, "");
+  }
+
+  function setSpeakerName(el, name, stream, locked) {
+    el.textContent = stream ? streamDisplayName(name) : (name || "");
+    if (stream) el.insertAdjacentHTML("beforeend", ' <span class="stream-kind" title="Streaming">' + icon("screen-share") + "</span>");
+    if (locked) el.insertAdjacentHTML("beforeend", ' <span class="lk">' + icon("lock", "lk") + "</span>");
+  }
+
   function panelFor(client) {
     const key = (client || "unknown").toLowerCase();
     if (panels[key]) return panels[key];
@@ -2212,9 +2222,8 @@ export function bootDesktopController() {
       img.src = emojiAvatar(src);                      // undetected, or a manual name with no avatar
       img.onerror = null;
     }
-    nmEl.textContent = s.resolved ? (s.name || "") : unknownLabel(src);
+    setSpeakerName(nmEl, s.resolved ? (s.name || "") : unknownLabel(src), s.kind === "stream", s.locked);
     nmEl.style.color = s.resolved ? colorFor(src) : "var(--mut)";
-    if (s.locked) nmEl.insertAdjacentHTML("beforeend", ' <span class="lk">' + icon("lock", "lk") + "</span>");
     nmEl.style.cursor = img.style.cursor = "pointer";
     nmEl.title = img.title = "Click to assign this speaker";
     const open = (e) => { e.stopPropagation(); openAssignPicker(src, s.client || client, nmEl); };
@@ -2245,7 +2254,7 @@ export function bootDesktopController() {
     if (members.length) {
       html += '<div class="ap-list">' + members.map((u) =>
         `<div class="ap-item" data-uid="${u.userId}"><img src="${u.avatar || DEFAULT_AV_GRAY}">` +
-        `<span>${escapeHtml(u.name || "user")}</span>${u.stream ? '<small>stream</small>' : ''}</div>`).join("") + '</div>';
+        `<span>${escapeHtml(u.name || "user")}</span>${u.stream ? '<small class="ap-stream" title="Streaming">' + icon("screen-share") + '</small>' : ''}</div>`).join("") + '</div>';
     } else {
       html += '<div class="ap-empty">No call roster - this client has no debug port, so names can\'t be listed. '
             + 'Restart it with its port, or type a name / paste a user ID below.</div>';
@@ -2280,7 +2289,7 @@ export function bootDesktopController() {
       img.onerror = () => { badAvatars.add(s.avatar); img.src = emojiAvatar(src); };
     } else { img.src = emojiAvatar(src); }
     const nm = document.createElement("span"); nm.className = "nm";
-    nm.textContent = s.resolved ? (s.name || "") : unknownLabel(src);
+    setSpeakerName(nm, s.resolved ? (s.name || "") : unknownLabel(src), s.kind === "stream", false);
     if (!s.resolved) nm.style.color = "var(--mut)";
     const meta = document.createElement("span"); meta.className = "sub";
     meta.innerHTML = (s.kind === "stream" ? "stream" : "voice") + (s.locked ? ' · ' + icon("lock", "lk") + " locked" : "");
