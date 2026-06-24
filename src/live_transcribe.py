@@ -624,18 +624,27 @@ function install(rva) {
     onEnter(a) { this.src = a[0]; this.frame = a[2]; },
     onLeave(r) {
       if (r.toInt32() !== 0) return;                      // kNormal only
-      const f = this.frame;
-      const spc = f.add(0x18).readU32(), ch = f.add(0x28).readU32();
-      const base = f.add(0x50);                            // data_ (interleaved S16, 48k)
-      const outN = Math.floor(spc / 3);                   // 48k -> 16k
-      const inV = new Int16Array(base.readByteArray(spc * ch * 2));  // one bridge crossing/frame
-      const buf = new ArrayBuffer(outN * 2);
-      const view = new Int16Array(buf);
-      const stride = 3 * ch;                               // every 3rd 48k sample, L channel
-      for (let i = 0; i < outN; i++) view[i] = inV[i * stride];
-      LAST_RECV = this.src;                                // BFS root for the native roster scan
-      // tag by client (multi-client safe) and by ssrc (native per-stream identity)
-      send({ src: PID + ':' + this.src.toString(), client: CLIENT, ssrc: readSsrc(this.src) }, buf);
+      // This runs on Discord's audio thread for every frame, so it must NEVER throw - an uncaught
+      // exception here crashes the agent and destabilises Discord. Sanity-bound the frame header and
+      // guard the bulk read (readByteArray returns null on a 0-length/unreadable frame, and
+      // new Int16Array(null) would throw).
+      try {
+        const f = this.frame;
+        const spc = f.add(0x18).readU32(), ch = f.add(0x28).readU32();
+        if (!spc || !ch || spc > 0x4000 || ch > 8) return; // skip garbage/empty frames
+        const base = f.add(0x50);                          // data_ (interleaved S16, 48k)
+        const raw = base.readByteArray(spc * ch * 2);      // one bridge crossing/frame
+        if (!raw) return;
+        const inV = new Int16Array(raw);
+        const outN = Math.floor(spc / 3);                  // 48k -> 16k
+        const buf = new ArrayBuffer(outN * 2);
+        const view = new Int16Array(buf);
+        const stride = 3 * ch;                             // every 3rd 48k sample, L channel
+        for (let i = 0; i < outN; i++) view[i] = inV[i * stride];
+        LAST_RECV = this.src;                              // BFS root for the native roster scan
+        // tag by client (multi-client safe) and by ssrc (native per-stream identity)
+        send({ src: PID + ':' + this.src.toString(), client: CLIENT, ssrc: readSsrc(this.src) }, buf);
+      } catch (e) {}
     }
   });
   send({ ready: true, pid: PID, client: CLIENT });
