@@ -1759,14 +1759,29 @@ export function bootDesktopController() {
       toast("Log cleared");
     };
   }
+  function hasLogSelection(el) {
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || sel.rangeCount === 0) return false;
+    for (let i = 0; i < sel.rangeCount; i++) {
+      const range = sel.getRangeAt(i);
+      if (range.intersectsNode && range.intersectsNode(el)) return true;
+      const nodes = [sel.anchorNode, sel.focusNode];
+      if (nodes.some((node) => node && (node === el || el.contains(node.nodeType === Node.TEXT_NODE ? node.parentNode : node)))) {
+        return true;
+      }
+    }
+    return false;
+  }
   async function pumpLog() {
     if (API) {
       try {
         const txt = await API.get_log();
         const el = $("log");
-        const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 30;
-        el.textContent = txt;
-        if (atBottom) el.scrollTop = el.scrollHeight;
+        if (txt !== el.textContent && !hasLogSelection(el)) {
+          const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 30;
+          el.textContent = txt;
+          if (atBottom) el.scrollTop = el.scrollHeight;
+        }
       } catch (e) {}
     }
     setTimeout(pumpLog, 1000);
