@@ -25,6 +25,12 @@ FALLBACK_RVA = 0x4481d0  # build 1.0.1199
 CONNECT_FUNCSIG = b"void __cdecl discord::voice::Connection::ConnectUser"
 DISCONNECT_FUNCSIG = b"void __cdecl discord::voice::Connection::DisconnectUser"
 
+# Connection factory: discord::voice::Connection::Create(threadloop, std::string, BridgeConnectionOptions, ...).
+# The BridgeConnectionOptions carries the connection CONTEXT label ("default"/"voice" for the main
+# voice channel, "stream"/"golive" for a watched Go Live). Hooking Create lets us tag each
+# Connection* with its kind at creation - the authoritative mic-vs-screenshare signal.
+CREATE_FUNCSIG = b"static std::shared_ptr<Connection> __cdecl discord::voice::Connection::Create"
+
 # Native event sources (no CDP): remote speaking + self mute/deaf, pushed JS->native.
 SPEAKING_FUNCSIG = b"void __cdecl discord::voice::Connection::SetRemoteUserSpeaking"
 SELFMUTE_FUNCSIG = b"void __cdecl VoiceConnectionWrapper::SetSelfMute"
@@ -168,6 +174,24 @@ def locate_bind_rvas(node_path=None, prefer_running_build=None, verbose=False):
         return None, None
 
 
+def locate_create_rva(node_path=None, prefer_running_build=None, verbose=False):
+    """RVA of discord::voice::Connection::Create, or None. Hooking it yields the per-connection
+    context label (mic 'voice' vs screenshare 'stream') at creation time."""
+    path = node_path or find_voice_node(prefer_running_build)
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        pe = pefile.PE(path, fast_load=True)
+        rva = _func_by_marker(pe, CREATE_FUNCSIG)
+        if verbose:
+            print("[locate] Create=%s (%s)" % (hex(rva) if rva else None, os.path.basename(path)))
+        return rva
+    except Exception as e:
+        if verbose:
+            print("[locate] create-rva scan failed (%s)" % e)
+        return None
+
+
 def locate_event_rvas(node_path=None, prefer_running_build=None, verbose=False):
     """Return {'speaking','selfmute','selfdeaf'} RVAs (any may be None). These hook the native
     event setters so we get remote-speaking + self mute/deaf with no CDP/webpack."""
@@ -194,6 +218,7 @@ if __name__ == "__main__":
     for p in sorted(glob.glob(NODE_GLOB)):
         rva, _ = locate_rva(p, verbose=True)
         cu, du = locate_bind_rvas(p, verbose=True)
+        cr = locate_create_rva(p, verbose=True)
         ev = locate_event_rvas(p, verbose=True)
         print("  => audio 0x%x  ConnectUser %s  DisconnectUser %s  events %s  (%s)"
               % (rva, hex(cu) if cu else None, hex(du) if du else None,

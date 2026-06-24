@@ -55,7 +55,7 @@ import models as model_store
 import gpu_detect                    # device routing (auto|cuda|hip|vulkan|cpu)
 import backends                      # transcription backend seam (CTranslate2 today)
 from config import load as _load_config
-from locate import locate_rva, locate_bind_rvas, locate_event_rvas  # runtime RVA auto-locators
+from locate import locate_rva, locate_bind_rvas, locate_create_rva, locate_event_rvas  # runtime RVA auto-locators
 CFG = _load_config()
 ASR_ENGINE = (CFG.get("asr_engine") or "whisper").strip().lower()
 MODEL = CFG["whisper_model"]
@@ -227,6 +227,9 @@ src_client = {}                                # src -> client exe name (e.g. 'd
 src_ssrc = {}                                  # src -> int ssrc read from the native ChannelReceive
 native_bind = {}                               # (client, ssrc) -> userId, from the native ConnectUser hook
 native_skind = {}                              # (client, ssrc) -> 'voice'|'stream', from the native roster scan
+conn_kind = {}                                 # (client, connPtr) -> 'voice'|'stream', from Connection::Create context
+ssrc_conn = {}                                 # (client, ssrc) -> connPtr, from the ConnectUser hook
+native_skind_locked = set()                    # (client, ssrc) whose kind came from Create (authoritative, sticky)
 native_table_t = {}                            # client -> last native-roster memory scan ts (collectTable)
 name_state = {}                                # userId -> {"tier": int, "tries": int, "frozen": bool} (CDP resolver)
 native_speaking = {}                           # client -> {userId: last_ts} from SetRemoteUserSpeaking hook
@@ -661,9 +664,11 @@ function installBind(cu, du) {
   const CLIENT = ((Process.enumerateModules()[0] || {}).name || "").toLowerCase();
   if (cu) {
     Interceptor.attach(MOD.base.add(cu), {
+      // a[0]=this (Connection*), a[1]=&userId, a[2]=ssrc. The Connection* lets us map each ssrc to
+      // its connection, whose kind (mic 'voice' vs screenshare 'stream') is set once at Create time.
       onEnter(a) {
         const uid = readStdString(a[1]); const ssrc = a[2].toUInt32();
-        if (uid && ssrc) send({ bind: true, client: CLIENT, userId: uid, ssrc: ssrc });
+        if (uid && ssrc) send({ bind: true, client: CLIENT, userId: uid, ssrc: ssrc, conn: a[0].toString() });
       }
     });
   }
@@ -672,6 +677,40 @@ function installBind(cu, du) {
       onEnter(a) { const uid = readStdString(a[1]); if (uid) send({ unbind: true, client: CLIENT, userId: uid }); }
     });
   }
+  return true;
+}
+function installCreate(rva) {
+  // discord::voice::Connection::Create(threadloop, std::string, BridgeConnectionOptions, ...): the
+  // options carry the connection CONTEXT label. Reading it at creation is the authoritative, never-
+  // flipping mic-vs-screenshare signal (no roster-size guess, no run-length timer, no webpack).
+  //   a[0]=&ret shared_ptr (onLeave: readPointer -> the Connection*), a[1..]=arg pointers.
+  // The label is a std::string == "default"/"voice" (mic channel) or "stream"/"golive" (Go Live).
+  // We scan arg-reachable memory for a known token rather than pin one offset, so a future build's
+  // struct shuffle can't silently misread - an unknown value just yields no classification.
+  if (!MOD) modpath();
+  if (!MOD) return false;
+  const CLIENT = ((Process.enumerateModules()[0] || {}).name || "").toLowerCase();
+  const TOK = { "default": "voice", "voice": "voice", "stream": "stream", "golive": "stream" };
+  Interceptor.attach(MOD.base.add(rva), {
+    onEnter(a) {
+      let kind = null;
+      for (let i = 1; i < 6 && !kind; i++) {
+        let p; try { p = a[i]; } catch (e) { continue; }
+        for (let o = 0; o < 0x200; o += 8) {
+          let s; try { s = readStdString(p.add(o)); } catch (e) { continue; }
+          if (s && TOK[s]) { kind = TOK[s]; break; }
+        }
+      }
+      this.kind = kind; this.ret = a[0];
+    },
+    onLeave(r) {
+      if (!this.kind) return;
+      try {
+        const conn = this.ret.readPointer();
+        if (!conn.isNull()) send({ conncreate: true, client: CLIENT, conn: conn.toString(), kind: this.kind });
+      } catch (e) {}
+    }
+  });
   return true;
 }
 function installEvents(spk, smute, sdeaf) {
@@ -734,7 +773,7 @@ function install(rva) {
   send({ ready: true, pid: PID, client: CLIENT });
   return true;
 }
-rpc.exports = { modpath: modpath, install: install, setSsrcs: setSsrcs, installBind: installBind, installEvents: installEvents, collectTable: collectTable };
+rpc.exports = { modpath: modpath, install: install, setSsrcs: setSsrcs, installBind: installBind, installCreate: installCreate, installEvents: installEvents, collectTable: collectTable };
 """
 
 def on_message(msg, data):
@@ -743,11 +782,29 @@ def on_message(msg, data):
     p = msg["payload"]
     if p.get("ready"):
         print("[capture] hook installed (pid %s)" % p.get("pid")); return
-    if p.get("bind"):                          # native ConnectUser: authoritative ssrc -> userId
+    if p.get("conncreate"):                    # native Connection::Create: authoritative kind per connection
+        cl, conn, kind = (p.get("client") or "").lower(), p.get("conn"), p.get("kind")
+        if cl and conn and kind in ("voice", "stream"):
+            with lock:
+                conn_kind[(cl, conn)] = kind
+                # back-fill any ssrc already bound to this connection (bind can arrive first)
+                for (c2, sv), cn in ssrc_conn.items():
+                    if c2 == cl and cn == conn:
+                        native_skind[(cl, sv)] = kind
+                        native_skind_locked.add((cl, sv))
+        return
+    if p.get("bind"):                          # native ConnectUser: authoritative ssrc -> userId (+ connection)
         cl, uid, ssrc = (p.get("client") or "").lower(), p.get("userId"), p.get("ssrc")
+        conn = p.get("conn")
         if cl and uid and ssrc:
             with lock:
                 native_bind[(cl, ssrc)] = uid
+                if conn:
+                    ssrc_conn[(cl, ssrc)] = conn
+                    k = conn_kind.get((cl, conn))   # Create already classified this connection
+                    if k:
+                        native_skind[(cl, ssrc)] = k
+                        native_skind_locked.add((cl, ssrc))
         return
     if p.get("unbind"):                        # native DisconnectUser: user left this client's call
         cl, uid = (p.get("client") or "").lower(), p.get("userId")
@@ -755,6 +812,8 @@ def on_message(msg, data):
             for k in [k for k, v in native_bind.items() if k[0] == cl and v == uid]:
                 del native_bind[k]
                 native_skind.pop(k, None)
+                native_skind_locked.discard(k)
+                ssrc_conn.pop(k, None)
             native_speaking.get(cl, {}).pop(uid, None)
         return
     if p.get("speak"):                         # native SetRemoteUserSpeaking: remote speaking on/off
@@ -801,6 +860,10 @@ def _on_unhook(pid):
             for k in [k for k in native_bind if k[0] == name]:
                 del native_bind[k]
                 native_skind.pop(k, None)
+                native_skind_locked.discard(k)
+                ssrc_conn.pop(k, None)
+            for k in [k for k in conn_kind if k[0] == name]:
+                del conn_kind[k]
             native_speaking.pop(name, None)
             native_self.pop(name, None)
     if name:
@@ -840,6 +903,14 @@ def attach_new():
                     bind_ok = sc.exports_sync.install_bind(cu or 0, du or 0)
                 except Exception:
                     bind_ok = False
+            # Connection::Create -> authoritative mic-vs-screenshare kind per connection, set once at
+            # creation (never flips). Best-effort: missing symbol just leaves the collectTable fallback.
+            cr = locate_create_rva(path)
+            if cr:
+                try:
+                    sc.exports_sync.install_create(cr)
+                except Exception:
+                    pass
             # native event sources (speaking + self mute/deaf) - no CDP needed
             ev = locate_event_rvas(path)
             if any(ev.values()):
@@ -1849,7 +1920,9 @@ def mapping_thread():
                             continue
                         native_bind[key] = uid
                         k = rec.get("kind") if isinstance(rec, dict) else None
-                        if k:
+                        # Don't let the roster-size/voiceState-type fallback overwrite a kind that
+                        # Connection::Create classified authoritatively (that one is the ground truth).
+                        if k and key not in native_skind_locked:
                             native_skind[key] = k
 
 # ---------------- transcription ----------------
