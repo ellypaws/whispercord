@@ -50,6 +50,8 @@ import { colorFor, markerAvatar as emojiAvatar, speakerDisplay } from "../../sha
     .vt-text{color:#fff;font-size:16px;line-height:1.3}
     .vt-name{font-weight:600;margin-right:6px}
     .vt-name .vt-ico{width:12px;height:12px;opacity:.82;vertical-align:-1px;margin-left:2px}
+    .vt-stream{color:#23a55a;display:inline-flex;align-items:center}
+    .vt-stream .vt-ico{opacity:1}
     .vt-cursor{display:inline-block;color:#9bb7ff;margin-left:2px;animation:vt-blink 1s steps(2,jump-none) infinite}
     @keyframes vt-blink{0%,49%{opacity:1}50%,100%{opacity:.12}}
     @keyframes vt-in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
@@ -174,7 +176,7 @@ import { colorFor, markerAvatar as emojiAvatar, speakerDisplay } from "../../sha
   let layoutTimer = null;
   function setNameLabel(el, name, locked, stream, suffix) {
     el.textContent = name || "unknown";
-    if (stream) el.insertAdjacentHTML("beforeend", " " + icon("screen-share"));
+    if (stream) el.insertAdjacentHTML("beforeend", ' <span class="vt-stream" title="Streaming">' + icon("screen-share") + "</span>");
     if (locked) el.insertAdjacentHTML("beforeend", " " + icon("lock"));
     if (suffix) el.appendChild(document.createTextNode(suffix));
   }
